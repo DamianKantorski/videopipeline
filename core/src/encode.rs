@@ -73,7 +73,8 @@ fn direct_out(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> OutSpec {
     let mut streams = sv(&["-map", "0:v:0"]);
     let (src, _) = crate::mux::source_streams(opts, a, p.container, 0, true, &info);
     streams.extend(src);
-    let mut tail = sv(&["-map_metadata", "0", "-map_chapters", "0"]);
+    let mut tail = crate::mux::meta_args(opts, a, 0);
+    tail.extend(sv(&["-map_chapters", "0"]));
     match p.container {
         Container::Mp4 => {
             tail.extend(sv(&["-movflags", "+faststart"]));
@@ -103,7 +104,8 @@ fn live_mux_args(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> Vec<Strin
     v.extend(sv(&["-map", "0:v:0", "-c:v", "copy"]));
     let (src, _) = crate::mux::source_streams(opts, a, p.container, 1, true, &info);
     v.extend(src);
-    v.extend(sv(&["-map_metadata", "1", "-map_chapters", "1"]));
+    v.extend(crate::mux::meta_args(opts, a, 1));
+    v.extend(sv(&["-map_chapters", "1"]));
     match p.container {
         // hvc1 dla odtwarzaczy Apple / przeglądarek; dvvC w MP4 wymaga -strict unofficial.
         Container::Mp4 => v.extend(sv(&["-tag:v", "hvc1", "-strict", "unofficial", "-movflags", "+faststart", "-f", "mp4"])),

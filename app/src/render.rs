@@ -23,11 +23,13 @@ use std::time::{Instant, SystemTime};
 
 const OPTION_HELP: [&str; OPTION_COUNT] = [
     "", // wiersz 0: opis budowany dynamicznie (wykryte enkodery)
+    "", // wiersz 1: audio — opis zależny od wyboru
     "Jakość HEVC: NVENC -cq, QSV ICQ, VAAPI QP; mniej = lepsza jakość. ←/→ ±1, PgUp/PgDn ±5.",
     "Jakość AV1: NVENC -cq, QSV ICQ, VAAPI QP×5; mniej = lepsza jakość. ←/→ ±1, PgUp/PgDn ±5.",
     "Jakość AVC (H.264, 8-bit High, tylko SDR): NVENC -cq, QSV ICQ, VAAPI QP; mniej = lepiej.",
     "Tylko Intel QSV: ← szybciej, → wolniej i nieco lepiej. veryslow bywa kilka razy wolniejszy od slow.",
-    "", // wiersz 5: kontener — opis zależny od wyboru (ostrzeżenie dla MP4)
+    "", // wiersz 6: kontener — opis zależny od wyboru (ostrzeżenie dla MP4)
+    "Bez GPS i danych telefonu/aparatu (marka, model); zostaje tytuł i data.",
     "Do 1920×1080, proporcje zachowane (4K → 1080p); mniejsze źródła bez zmian.",
     "Pierwsza polska ścieżka przekodowana do E-AC-3 2.0 192 kb/s.",
     "Bez tego: tylko polska ścieżka audio i brak napisów.",
@@ -501,7 +503,14 @@ fn marquee_shift(app: &mut App, left: bool, label: Option<String>, width: usize)
 fn summary(o: &Opts) -> String {
     let mut parts: Vec<String> = vec![o.codec_label()];
     parts.push(format!("CQ {}", o.cq()));
-    parts.push(String::from(if o.pl_eac3 { "audio PL E-AC-3 192k" } else { "audio PL (kopia)" }));
+    parts.push(if o.pl_eac3 {
+        "audio PL E-AC-3 192k".to_string()
+    } else {
+        format!("audio PL ({})", o.audio.label())
+    });
+    if o.strip_meta {
+        parts.push("bez GPS".into());
+    }
     if o.container != ContainerChoice::Auto {
         parts.push(format!("→ {}", o.container.label()));
     }
@@ -750,7 +759,7 @@ fn render_fkeys(f: &mut Frame, area: Rect) {
 // --------------------------------------------------------------- okienka ---
 
 fn render_options(f: &mut Frame, area: Rect, app: &App) {
-    let rect = centered(area, 78, 25);
+    let rect = centered(area, 78, 27);
     f.render_widget(Clear, rect);
     let block = dialog_block("Opcje videopipeline", BOX_QUEUE);
     let inner = block.inner(rect);
@@ -772,6 +781,7 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
                 format!("< {} — niedostępny >", o.codec_label())
             },
         ),
+        ("Audio   (--audio)".into(), format!("< {} >", o.audio.label())),
         ("Jakość HEVC — CQ   (--hevc-cq)".into(), format!("< {} >", o.hevc_cq)),
         ("Jakość AV1 — CQ   (--av1-cq)".into(), format!("< {} >", o.av1_cq)),
         ("Jakość AVC — CQ   (--avc-cq)".into(), format!("< {} >", o.avc_cq)),
@@ -784,6 +794,7 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
             },
         ),
         ("Kontener wyjściowy   (--container)".into(), format!("< {} >", o.container.label())),
+        (format!("{} Usuń lokalizację i dane urządzenia   (--strip-meta)", chk(o.strip_meta)), String::new()),
         (format!("{} Skaluj do 1080p   (--1080p)", chk(o.scale_1080)), String::new()),
         (format!("{} Audio PL → E-AC-3 stereo 192k   (-pleac3)", chk(o.pl_eac3)), String::new()),
         (format!("{} Dodatkowo audio EN + napisy EN i PL   (-da)", chk(o.extra)), String::new()),
@@ -808,9 +819,19 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::default());
     let help = if app.opt_cursor == 0 {
         format!("Wykryte: {}. HEVC: DV/HDR10+; AV1: 10-bit; AVC: 8-bit, tylko SDR.", app.hw.summary())
+    } else if app.opt_cursor == crate::app::OPT_AUDIO {
+        match o.audio {
+            AudioChoice::Auto => "Jak źródło: kopia; PCM → FLAC (MKV) / AAC (MP4); iPhone/iPad → AAC.",
+            AudioChoice::Copy => "Bez zmian; do MP4 kodeki spoza MP4 (DTS, TrueHD, PCM) → E-AC-3 640k.",
+            AudioChoice::Aac => "AAC 128 kb/s na kanał (stereo 256k, 5.1 640k); AAC ze źródła — kopia.",
+            AudioChoice::Alac => "ALAC — bezstratny (Apple), 16 albo 24 bity jak źródło.",
+            AudioChoice::Flac => "FLAC — bezstratny, kompresja 8, 16 albo 24 bity jak źródło.",
+            AudioChoice::Ac3 => "AC-3 (Dolby Digital) 640k/448k — np. PS4 z AVC; ponad 5.1 → 5.1.",
+        }
+        .into()
     } else if app.opt_cursor == crate::app::OPT_CONTAINER {
         match o.container {
-            ContainerChoice::Auto => "Jak źródło: .mp4 → MP4, reszta → MKV.".into(),
+            ContainerChoice::Auto => "Jak źródło: .mp4/.m4v i nagrania iPhone/iPad → MP4, reszta → MKV.".into(),
             ContainerChoice::Mkv => "MKV: pełne Dolby Vision i HDR10+, wszystkie ścieżki audio i napisy.".into(),
             ContainerChoice::Mp4 if o.legacy_inject => {
                 "UWAGA: przy starej ścieżce DV/HDR10+ w MP4 nie są pełne — wybierz MKV.".into()

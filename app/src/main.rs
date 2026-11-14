@@ -59,6 +59,12 @@ struct Cli {
     /// MP4: bez konfiguracji Dolby Vision i z ograniczeniami HDR10+ — do DV/HDR10+ wybierz MKV
     #[arg(long, value_parser = ["auto", "mkv", "mp4"])]
     container: Option<String>,
+    /// Kodek ścieżek audio: auto (jak źródło: kopia, PCM → FLAC/AAC, iPhone → AAC), copy, aac, alac, flac, ac3
+    #[arg(long, value_parser = ["auto", "copy", "aac", "alac", "flac", "ac3"])]
+    audio: Option<String>,
+    /// Usuń lokalizację (GPS) i dane urządzenia (marka, model, oprogramowanie) z pliku wynikowego
+    #[arg(long = "strip-meta", visible_alias = "no-location")]
+    strip_meta: bool,
     /// Pokaż wykryte enkodery GPU i zakończ
     #[arg(long)]
     detect: bool,
@@ -317,6 +323,8 @@ fn real_main() -> Result<i32> {
         shutdown: cli.shutdown,
         output_dir: platform::default_output_dir(),
         container: cli.container.as_deref().and_then(ContainerChoice::from_name).unwrap_or(ContainerChoice::Auto),
+        audio: cli.audio.as_deref().and_then(AudioChoice::from_name).unwrap_or(AudioChoice::Auto),
+        strip_meta: cli.strip_meta,
     };
 
     // Tryb skryptowy: żadnego ratatui, tylko zwykły tekst — mniej RAM-u.

@@ -105,9 +105,11 @@ pub enum Container {
 }
 
 impl Container {
+    /// „Jak źródło”: .mp4 / .m4v → MP4, nagrania z iPhone'a / iPada (.mov) → MP4, reszta → MKV.
     pub fn from_input(input: &Path) -> Self {
         match input.extension().and_then(|e| e.to_str()) {
-            Some(e) if e.eq_ignore_ascii_case("mp4") => Container::Mp4,
+            Some(e) if e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("m4v") => Container::Mp4,
+            Some(e) if e.eq_ignore_ascii_case("mov") && crate::probe::is_apple_device(input) => Container::Mp4,
             _ => Container::Mkv,
         }
     }
@@ -180,6 +182,46 @@ pub const DENOISE_CPU_FILTER: &str = "hqdn3d=1.2:1.0:2.0:1.5";
 pub const DENOISE_QSV_LEVEL: u32 = 16;
 pub const DENOISE_VAAPI_LEVEL: u32 = 10;
 
+/// Kodek ścieżek audio ze źródła (osobno od -pleac3 / -da, które dodają ścieżki E-AC-3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AudioChoice {
+    /// Jak źródło: kopia; PCM → FLAC (MKV) / AAC (MP4); iPhone / iPad → AAC; do MP4 kodeki spoza MP4 → E-AC-3.
+    Auto,
+    Copy,
+    Aac,
+    Alac,
+    Flac,
+    Ac3,
+}
+
+impl AudioChoice {
+    pub const ALL: [AudioChoice; 6] =
+        [AudioChoice::Auto, AudioChoice::Copy, AudioChoice::Aac, AudioChoice::Alac, AudioChoice::Flac, AudioChoice::Ac3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioChoice::Auto => "jak źródło",
+            AudioChoice::Copy => "kopiuj",
+            AudioChoice::Aac => "AAC",
+            AudioChoice::Alac => "ALAC",
+            AudioChoice::Flac => "FLAC",
+            AudioChoice::Ac3 => "AC-3",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<AudioChoice> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(AudioChoice::Auto),
+            "copy" | "kopiuj" => Some(AudioChoice::Copy),
+            "aac" => Some(AudioChoice::Aac),
+            "alac" => Some(AudioChoice::Alac),
+            "flac" => Some(AudioChoice::Flac),
+            "ac3" | "ac-3" => Some(AudioChoice::Ac3),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Opts {
     pub codec: Codec,
@@ -211,6 +253,10 @@ pub struct Opts {
     pub scale_1080: bool,
     /// Pełny log przebiegu do pliku w katalogu wyjściowym (wywołania i całe wyjście każdego narzędzia).
     pub full_log: bool,
+    /// Kodek ścieżek audio ze źródła.
+    pub audio: AudioChoice,
+    /// Bez lokalizacji (GPS) i danych urządzenia (marka, model, oprogramowanie) w pliku wynikowym.
+    pub strip_meta: bool,
     pub shutdown: bool,
     pub output_dir: PathBuf,
     /// Kontener pliku wynikowego (auto = jak źródło).

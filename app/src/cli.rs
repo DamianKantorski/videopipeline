@@ -18,7 +18,11 @@ use videopipeline_core::{
 fn summary(o: &Opts) -> String {
     let label = o.codec_label();
     let cq = format!("CQ {}", o.cq());
-    let mut p: Vec<&str> = vec![label.as_str(), cq.as_str()];
+    let audio = format!("audio {}", o.audio.label());
+    let mut p: Vec<&str> = vec![label.as_str(), cq.as_str(), audio.as_str()];
+    if o.strip_meta {
+        p.push("bez lokalizacji i danych urządzenia");
+    }
     if o.pl_eac3 {
         p.push("PL E-AC-3 192k");
     }

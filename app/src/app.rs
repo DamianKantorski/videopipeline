@@ -182,13 +182,14 @@ pub struct RenameCtx {
     pub input: TextInput,
 }
 
-pub const OPTION_COUNT: usize = 18;
+pub const OPTION_COUNT: usize = 20;
 /// Indeksy wierszy w oknie opcji (F7).
-pub const OPT_HEVC_CQ: usize = 1;
-pub const OPT_AV1_CQ: usize = 2;
-pub const OPT_AVC_CQ: usize = 3;
-pub const OPT_QSV_PRESET: usize = 4;
-pub const OPT_CONTAINER: usize = 5;
+pub const OPT_AUDIO: usize = 1;
+pub const OPT_HEVC_CQ: usize = 2;
+pub const OPT_AV1_CQ: usize = 3;
+pub const OPT_AVC_CQ: usize = 4;
+pub const OPT_QSV_PRESET: usize = 5;
+pub const OPT_CONTAINER: usize = 6;
 
 pub struct RunCtx {
     pub status: SharedStatus,
@@ -1220,6 +1221,7 @@ impl App {
             OPT_AVC_CQ => self.opts.avc_cq = bump(self.opts.avc_cq),
             OPT_QSV_PRESET => self.cycle_preset(d.signum()),
             OPT_CONTAINER => self.cycle_container(d.signum()),
+            OPT_AUDIO => self.cycle_audio(d.signum()),
             0 => self.cycle_codec(if d < 0 { -1 } else { 1 }),
             _ => self.toggle_option(),
         }
@@ -1246,6 +1248,12 @@ impl App {
     }
 
     /// Kontener wyniku: jak źródło → MKV → MP4 (z zawijaniem).
+    fn cycle_audio(&mut self, d: i32) {
+        let all = AudioChoice::ALL;
+        let i = all.iter().position(|c| *c == self.opts.audio).unwrap_or(0) as i32;
+        self.opts.audio = all[(i + if d < 0 { -1 } else { 1 }).rem_euclid(all.len() as i32) as usize];
+    }
+
     fn cycle_container(&mut self, d: i32) {
         let all = ContainerChoice::ALL;
         let i = all.iter().position(|c| *c == self.opts.container).unwrap_or(0) as i32;
@@ -1268,19 +1276,21 @@ impl App {
                 let i = QSV_PRESETS.iter().position(|p| *p == self.opts.qsv_preset).unwrap_or(4);
                 self.opts.qsv_preset = QSV_PRESETS[(i + 1) % QSV_PRESETS.len()];
             }
+            OPT_AUDIO => self.cycle_audio(1),
             OPT_CONTAINER => self.cycle_container(1),
-            6 => self.opts.scale_1080 = !self.opts.scale_1080,
-            7 => self.opts.pl_eac3 = !self.opts.pl_eac3,
-            8 => self.opts.extra = !self.opts.extra,
-            9 => self.opts.denoise = !self.opts.denoise,
-            10 => self.opts.no_crop = !self.opts.no_crop,
-            11 => self.opts.no_dv = !self.opts.no_dv,
-            12 => self.opts.no_hdr10plus = !self.opts.no_hdr10plus,
-            13 => self.opts.legacy_inject = !self.opts.legacy_inject,
-            14 => self.opts.full_log = !self.opts.full_log,
-            15 => self.opts.copy = !self.opts.copy,
-            16 => self.opts.shutdown = !self.opts.shutdown,
-            17 => self.opt_edit = Some(self.opts.output_dir.to_string_lossy().to_string()),
+            7 => self.opts.strip_meta = !self.opts.strip_meta,
+            8 => self.opts.scale_1080 = !self.opts.scale_1080,
+            9 => self.opts.pl_eac3 = !self.opts.pl_eac3,
+            10 => self.opts.extra = !self.opts.extra,
+            11 => self.opts.denoise = !self.opts.denoise,
+            12 => self.opts.no_crop = !self.opts.no_crop,
+            13 => self.opts.no_dv = !self.opts.no_dv,
+            14 => self.opts.no_hdr10plus = !self.opts.no_hdr10plus,
+            15 => self.opts.legacy_inject = !self.opts.legacy_inject,
+            16 => self.opts.full_log = !self.opts.full_log,
+            17 => self.opts.copy = !self.opts.copy,
+            18 => self.opts.shutdown = !self.opts.shutdown,
+            19 => self.opt_edit = Some(self.opts.output_dir.to_string_lossy().to_string()),
             _ => {}
         }
     }

@@ -38,6 +38,122 @@ const MP4_AUDIO: &[&str] = &["aac", "ac3", "eac3", "mp3", "mp2", "opus", "flac",
 /// Napisy tekstowe — do MP4 jako mov_text. Obrazkowych (PGS, DVD) MP4 nie przyjmie.
 const TEXT_SUBS: &[&str] = &["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"];
 
+/// Docelowa postać ścieżki audio ze źródła.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AudioOut {
+    Copy,
+    Aac,
+    Alac,
+    Flac,
+    Ac3,
+    /// Zapasowo dla MP4, gdy kodek źródła nie mieści się w MP4 (DTS, TrueHD, PCM przy „kopiuj”).
+    Eac3,
+}
+
+/// Źródło o rozdzielczości ponad 16 bitów (do FLAC / ALAC zapisujemy wtedy 24 bity).
+fn hi_res(codec: &str) -> bool {
+    codec.starts_with("pcm_s24") || codec.starts_with("pcm_s32") || codec.starts_with("pcm_f")
+        || matches!(codec, "truehd" | "mlp" | "dts" | "flac" | "alac")
+}
+
+/// Co zrobić ze ścieżką audio o kodeku `codec` w kontenerze `container`.
+pub(crate) fn audio_out(choice: AudioChoice, container: Container, codec: &str, apple: bool) -> AudioOut {
+    let mp4_ok = codec.is_empty() || MP4_AUDIO.contains(&codec);
+    let fits = |o: AudioOut| if container == Container::Mp4 && o == AudioOut::Copy && !mp4_ok { AudioOut::Eac3 } else { o };
+    // Ten sam kodek co docelowy — kopia (bez ponownej, stratnej kompresji).
+    let same = |c: &str| codec == c;
+    match choice {
+        AudioChoice::Copy => fits(AudioOut::Copy),
+        AudioChoice::Aac => if same("aac") { AudioOut::Copy } else { AudioOut::Aac },
+        AudioChoice::Alac => if same("alac") { AudioOut::Copy } else { AudioOut::Alac },
+        AudioChoice::Flac => if same("flac") { AudioOut::Copy } else { AudioOut::Flac },
+        AudioChoice::Ac3 => if same("ac3") { AudioOut::Copy } else { AudioOut::Ac3 },
+        AudioChoice::Auto => {
+            if apple {
+                // iPhone / iPad: AAC (zgodność z urządzeniami Apple); AAC ze źródła — kopia.
+                if same("aac") { AudioOut::Copy } else { AudioOut::Aac }
+            } else if codec.starts_with("pcm_") {
+                // Nieskompresowane PCM: w MKV bezstratnie i ~2× mniejsze (FLAC), w MP4 AAC.
+                if container == Container::Mkv { AudioOut::Flac } else { AudioOut::Aac }
+            } else {
+                fits(AudioOut::Copy)
+            }
+        }
+    }
+}
+
+/// Argumenty kodera dla wyjściowej ścieżki audio nr `n` (najlepsze kodery dostępne w ffmpeg z paczki).
+fn audio_codec_args(out: AudioOut, n: usize, codec: &str, channels: u32) -> Vec<String> {
+    let c = |k: &str| format!("-{k}:a:{n}");
+    let mut v: Vec<String> = vec![];
+    match out {
+        AudioOut::Copy => v.extend([c("c"), "copy".into()]),
+        AudioOut::Aac => {
+            // Wbudowany koder AAC ffmpeg (libfdk_aac nie może być rozpowszechniany z GPL, AudioToolbox
+            // jest tylko na macOS). Jego tryb VBR jest eksperymentalny i słabszy niż CBR, więc najwyższa
+            // jakość = wysoka stała przepływność: 128 kb/s na kanał (stereo 256k, 5.1 640k).
+            let rate = (128 * channels.max(1)).min(640);
+            v.extend([c("c"), "aac".into(), c("b"), format!("{rate}k")]);
+        }
+        AudioOut::Alac => {
+            v.extend([c("c"), "alac".into(), c("sample_fmt"), if hi_res(codec) { "s32p" } else { "s16p" }.into()]);
+        }
+        AudioOut::Flac => {
+            v.extend([c("c"), "flac".into(), c("compression_level"), "8".into()]);
+            if hi_res(codec) {
+                v.extend([c("sample_fmt"), "s32".into(), c("bits_per_raw_sample"), "24".into()]);
+            } else {
+                v.extend([c("sample_fmt"), "s16".into()]);
+            }
+        }
+        AudioOut::Ac3 => {
+            // AC-3 (Dolby Digital): najwyżej 5.1; 640 kb/s dla wielokanałowego, 448 kb/s dla stereo.
+            let rate = if channels > 2 { "640k" } else { "448k" };
+            v.extend([c("c"), "ac3".into(), c("b"), rate.into()]);
+            if channels > 6 {
+                v.extend([c("ac"), "6".into()]);
+            }
+        }
+        AudioOut::Eac3 => {
+            v.extend([c("c"), "eac3".into(), c("b"), "640k".into()]);
+            if channels > 6 {
+                v.extend([c("ac"), "6".into()]);
+            }
+        }
+    }
+    v
+}
+
+fn audio_out_label(o: AudioOut) -> &'static str {
+    match o {
+        AudioOut::Copy => "kopia",
+        AudioOut::Aac => "AAC",
+        AudioOut::Alac => "ALAC",
+        AudioOut::Flac => "FLAC",
+        AudioOut::Ac3 => "AC-3",
+        AudioOut::Eac3 => "E-AC-3 640k",
+    }
+}
+
+/// Metadane globalne z wejścia `src`: wszystkie albo — przy usuwaniu lokalizacji i danych urządzenia —
+/// tylko tytuł i data nagrania. Znaczniki strumieni z nazwą producenta / oprogramowania są czyszczone.
+pub(crate) fn meta_args(opts: &Opts, a: &Analysis, src: usize) -> Vec<String> {
+    if !opts.strip_meta {
+        return vec!["-map_metadata".into(), src.to_string()];
+    }
+    let mut v: Vec<String> = vec!["-map_metadata".into(), "-1".into()];
+    let tags = probe::format_tags(&a.input_file);
+    for key in ["title", "creation_time"] {
+        if let Some(val) = tags.get(key) {
+            v.extend(["-metadata".into(), format!("{key}={val}")]);
+        }
+    }
+    for key in ["handler_name", "vendor_id", "encoder", "com.android.version", "location", "location-eng"] {
+        v.extend(["-metadata:s".into(), format!("{key}=")]);
+    }
+    v
+}
+
 /// Mapowanie i kodeki strumieni źródła (wejście ffmpeg nr `src`): wybrane audio i napisy w postaci
 /// zgodnej z kontenerem. `encode_audio`: polska (-pleac3) i angielska (-da) ścieżka E-AC-3 kodowane
 /// w locie; inaczej dokłada je wołający z plików tymczasowych. Zwraca (argumenty, liczba ścieżek audio).
@@ -50,19 +166,17 @@ pub(crate) fn source_streams(
     info: &HashMap<u32, (String, u32)>,
 ) -> (Vec<String>, usize) {
     let codec = |idx: u32| info.get(&idx).map(|(c, _)| c.clone()).unwrap_or_default();
+    let apple = probe::is_apple_device(&a.input_file);
     let mut args: Vec<String> = vec![];
     let mut n = 0usize;
     for idx in source_audio(opts, a) {
         args.extend(["-map".into(), format!("{src}:{idx}")]);
         let c = codec(idx);
-        if container == Container::Mp4 && !c.is_empty() && !MP4_AUDIO.contains(&c.as_str()) {
-            args.extend([format!("-c:a:{n}"), "eac3".into(), format!("-b:a:{n}"), "640k".into()]);
-            if info.get(&idx).is_some_and(|(_, ch)| *ch > 6) {
-                args.extend([format!("-ac:a:{n}"), "6".into()]);
-            }
-            plog!("    MP4: ścieżka audio {idx} ({c}) przekodowana do E-AC-3 640k (MP4 nie przyjmuje {c})");
-        } else {
-            args.extend([format!("-c:a:{n}"), "copy".into()]);
+        let ch = info.get(&idx).map(|(_, ch)| *ch).unwrap_or(2);
+        let out = audio_out(opts.audio, container, &c, apple);
+        args.extend(audio_codec_args(out, n, &c, ch));
+        if out != AudioOut::Copy {
+            plog!("    audio {idx} ({c}, {ch} kan.) → {}", audio_out_label(out));
         }
         n += 1;
     }
@@ -126,8 +240,39 @@ fn source_subs(opts: &Opts, a: &Analysis) -> Vec<u32> {
 fn mux_mkv(opts: &Opts, a: &Analysis, p: &Paths, current_video: &Path) -> Result<()> {
     let mut cmd: Vec<String> = vec!["--output".into(), s(&p.output), s(current_video)];
     let mut flags: Vec<String> = vec!["--no-video".into(), "--no-buttons".into()];
+    if opts.strip_meta {
+        flags.extend(["--no-global-tags".into(), "--no-track-tags".into()]);
+    }
 
-    let audio = source_audio(opts, a);
+    // Ścieżki do przekodowania (wybór kodeka audio) — mkvmerge tylko kopiuje, więc najpierw ffmpeg.
+    let info = probe::stream_codecs(&a.input_file);
+    let apple = probe::is_apple_device(&a.input_file);
+    let mut audio: Vec<u32> = vec![];
+    let mut converted: Vec<PathBuf> = vec![];
+    for idx in source_audio(opts, a) {
+        let (c, ch) = info.get(&idx).cloned().unwrap_or_default();
+        let out = audio_out(opts.audio, Container::Mkv, &c, apple);
+        if out == AudioOut::Copy {
+            audio.push(idx);
+            continue;
+        }
+        let f = PathBuf::from(format!("{}.audio{idx}.mka", p.output.display()));
+        let mut args: Vec<String> = ["-hide_banner", "-loglevel", if crate::log::full() { "info" } else { "error" }, "-y", "-i"]
+            .map(String::from)
+            .to_vec();
+        args.extend([s(&a.input_file), "-map".into(), format!("0:{idx}")]);
+        args.extend(audio_codec_args(out, 0, &c, ch));
+        args.push(s(&f));
+        plog!("    audio {idx} ({c}, {ch} kan.) → {}", audio_out_label(out));
+        if !run_quiet("ffmpeg", &args) || !non_empty(&f) {
+            let _ = fs::remove_file(&f);
+            for f in &converted {
+                let _ = fs::remove_file(f);
+            }
+            bail!("kodowanie ścieżki audio {idx} do {} nie powiodło się", audio_out_label(out));
+        }
+        converted.push(f);
+    }
     if audio.is_empty() {
         flags.push("--no-audio".into());
     } else {
@@ -153,9 +298,15 @@ fn mux_mkv(opts: &Opts, a: &Analysis, p: &Paths, current_video: &Path) -> Result
     if opts.extra && p.temp_eng_audio.exists() {
         cmd.extend(["--language".into(), "0:eng".into(), s(&p.temp_eng_audio)]);
     }
+    for f in &converted {
+        cmd.push(s(f));
+    }
 
     // mkvmerge zwraca 1 dla samych ostrzeżeń — to nadal sukces.
     let ok = proc::run(crate::proc::command("mkvmerge").args(&cmd).stdin(Stdio::null())).map_or(false, |c| c <= 1);
+    for f in &converted {
+        let _ = fs::remove_file(f);
+    }
     if !ok {
         bail!("błąd mkvmerge — pliki tymczasowe pozostają, kolejne uruchomienie wznowi proces");
     }
@@ -202,7 +353,8 @@ fn mux_mp4(opts: &Opts, a: &Analysis, p: &Paths, video: &Path, dynamic_hdr: bool
 
     args.extend(maps);
     args.extend(meta);
-    args.extend(["-map_chapters".into(), "1".into(), "-map_metadata".into(), "1".into()]);
+    args.extend(["-map_chapters".into(), "1".into()]);
+    args.extend(meta_args(opts, a, 1));
     if opts.codec == Codec::Hevc {
         // hvc1: zgodność z odtwarzaczami (Apple, przeglądarki, KDE).
         args.extend(["-tag:v".into(), "hvc1".into()]);
@@ -419,4 +571,34 @@ pub fn run(opts: &Opts, a: &Analysis, analysis_file: &Path, panel: &mut Panel) -
 
     finish_copy(opts, a, &p.output, false, panel);
     Ok(())
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn audio_decisions() {
+        use AudioChoice as A;
+        use AudioOut as O;
+        let (mkv, mp4) = (Container::Mkv, Container::Mp4);
+        // jak źródło
+        assert_eq!(audio_out(A::Auto, mkv, "pcm_s16le", false), O::Flac);
+        assert_eq!(audio_out(A::Auto, mp4, "pcm_s16le", false), O::Aac);
+        assert_eq!(audio_out(A::Auto, mkv, "dts", false), O::Copy);
+        assert_eq!(audio_out(A::Auto, mp4, "truehd", false), O::Eac3);
+        assert_eq!(audio_out(A::Auto, mp4, "pcm_s16le", true), O::Aac);
+        assert_eq!(audio_out(A::Auto, mp4, "aac", true), O::Copy);
+        // wybrany kodek: ten sam co źródło — kopia
+        assert_eq!(audio_out(A::Aac, mkv, "aac", false), O::Copy);
+        assert_eq!(audio_out(A::Ac3, mp4, "eac3", false), O::Ac3);
+        assert_eq!(audio_out(A::Flac, mp4, "flac", false), O::Copy);
+        assert_eq!(audio_out(A::Copy, mp4, "dts", false), O::Eac3);
+        assert_eq!(audio_out(A::Copy, mkv, "dts", false), O::Copy);
+        // parametry
+        assert_eq!(audio_codec_args(O::Aac, 0, "pcm_s16le", 2), ["-c:a:0", "aac", "-b:a:0", "256k"]);
+        assert_eq!(audio_codec_args(O::Aac, 1, "dts", 8), ["-c:a:1", "aac", "-b:a:1", "640k"]);
+        assert!(audio_codec_args(O::Flac, 0, "pcm_s24le", 2).contains(&"24".to_string()));
+        assert!(audio_codec_args(O::Ac3, 0, "truehd", 8).contains(&"6".to_string()));
+    }
 }

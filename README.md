@@ -179,12 +179,14 @@ Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecno�
 | `--intel`, `--engine nvenc\|qsv\|vaapi` | wybór karty (wyżej) |
 | `-q N`, `--hevc-cq N`, `--av1-cq N`, `--avc-cq N` | jakość, 1–51, mniej = lepiej (domyślnie HEVC 19, AV1 25, AVC 18 — AVC potrzebuje niższego CQ do podobnej jakości) |
 | `--qsv-preset P` | preset Intel QSV: `veryfast` … `veryslow` (domyślnie `slow`); `veryslow` na zintegrowanej grafice bywa kilka razy wolniejszy przy niewielkim zysku jakości |
-| `--container auto\|mkv\|mp4` | kontener wyniku (domyślnie jak źródło); Dolby Vision i HDR10+ w obu |
+| `--container auto\|mkv\|mp4` | kontener wyniku (domyślnie jak źródło: `.mp4`/`.m4v` i nagrania z iPhone'a / iPada → MP4, reszta → MKV); Dolby Vision i HDR10+ w obu |
 | `-pleac3` | polska ścieżka → E-AC-3 stereo 192 kb/s |
 | `-da` | dodatkowo angielskie audio (E-AC-3 5.1) oraz napisy EN i PL |
 | `-d` | łagodne odszumianie (tylko źródła SDR 8-bit; CUDA, vpp_qsv / denoise_vaapi albo CPU) |
 | `-pc` | bez wykrywania czarnych pasów (najdłuższy etap analizy) |
 | `--1080p` | zmniejszenie obrazu do 1920×1080 z zachowaniem proporcji (po kadrowaniu, np. 3840×1600 → 1920×800); mniejsze źródła bez zmian. NVIDIA: na CPU (Lanczos) przed NVENC, Intel: `vpp_qsv` / `scale_vaapi` na karcie. Obszar aktywny Dolby Vision (L5) jest przeliczany. Nazwa wyniku dostaje `_1080p` |
+| `--audio auto\|copy\|aac\|alac\|flac\|ac3` | kodek ścieżek audio (także w F7, zaraz pod kodekiem wideo). `auto` (domyślnie, „jak źródło”): kopia; PCM → FLAC w MKV / AAC w MP4; nagrania z iPhone'a / iPada → AAC; do MP4 kodeki spoza MP4 (DTS, TrueHD) → E-AC-3 640k. `aac`: wbudowany koder ffmpeg, 128 kb/s na kanał (stereo 256k, 5.1 640k). `alac` / `flac`: bezstratnie, 16 albo 24 bity jak źródło. `ac3`: Dolby Digital 640k (stereo 448k) — np. PS4 z AVC. Ścieżka już w wybranym kodeku jest kopiowana |
+| `--strip-meta` | bez lokalizacji (GPS) i danych urządzenia (marka, model, wersja oprogramowania, znaczniki aplikacji) w pliku wynikowym; zostaje tytuł i data nagrania. Także w F7 |
 | `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg, ffprobe, dovi_tool, hdr10plus_tool, mkvmerge, mediainfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
 | `--legacy-inject` | Dolby Vision / HDR10+ starą ścieżką: plik tymczasowy `.hevc`, dovi_tool / hdr10plus_tool i mkvmerge (domyślnie w locie, bez plików pośrednich) |
 | `-pdv`, `-ph` | bez Dolby Vision / bez HDR10+ |

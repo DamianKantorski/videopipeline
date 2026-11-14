@@ -186,6 +186,36 @@ fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
     probe_lines(path, args).into_iter().next()
 }
 
+/// Znaczniki globalne pliku (format tags), zapamiętane — kontener „jak źródło” pyta o nie wielokrotnie.
+pub fn format_tags(path: &Path) -> HashMap<String, String> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<std::path::PathBuf, HashMap<String, String>>>> = Mutex::new(None);
+    if let Some(t) = CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(path).cloned())) {
+        return t;
+    }
+    let tags: HashMap<String, String> = crate::proc::command("ffprobe")
+        .args(["-v", "error", "-show_entries", "format_tags", "-of", "json"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .logged_output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v.get("format")?.get("tags")?.as_object().cloned())
+        .map(|m| m.into_iter().filter_map(|(k, v)| Some((k, v.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    if let Ok(mut g) = CACHE.lock() {
+        g.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), tags.clone());
+    }
+    tags
+}
+
+/// Nagranie z iPhone'a / iPada (znaczniki QuickTime z aparatu Apple).
+pub fn is_apple_device(path: &Path) -> bool {
+    let t = format_tags(path);
+    t.get("com.apple.quicktime.make").is_some_and(|m| m.trim() == "Apple")
+        || t.get("com.apple.quicktime.model").is_some_and(|m| m.starts_with("iPhone") || m.starts_with("iPad"))
+}
+
 /// Jak video_codec, ale z komunikatem ffprobe (stderr) — do diagnostyki odrzuconych plików.
 pub fn video_codec_diag(path: &Path) -> (Option<String>, String) {
     let out = crate::proc::command("ffprobe")
