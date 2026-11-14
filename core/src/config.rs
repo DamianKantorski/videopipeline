@@ -180,7 +180,7 @@ pub const DENOISE_CPU_FILTER: &str = "hqdn3d=1.2:1.0:2.0:1.5";
 pub const DENOISE_QSV_LEVEL: u32 = 16;
 pub const DENOISE_VAAPI_LEVEL: u32 = 10;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Opts {
     pub codec: Codec,
     /// Silnik kodujący (NVENC / QSV / VAAPI)
@@ -209,6 +209,8 @@ pub struct Opts {
     pub legacy_inject: bool,
     /// Zmniejszenie obrazu do 1920×1080 (z zachowaniem proporcji; mniejsze źródła bez zmian).
     pub scale_1080: bool,
+    /// Pełny log przebiegu do pliku w katalogu wyjściowym (wywołania i całe wyjście każdego narzędzia).
+    pub full_log: bool,
     pub shutdown: bool,
     pub output_dir: PathBuf,
     /// Kontener pliku wynikowego (auto = jak źródło).

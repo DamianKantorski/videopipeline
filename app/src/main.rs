@@ -99,6 +99,9 @@ struct Cli {
     /// Zmniejsz obraz do 1920×1080 (proporcje zachowane, mniejsze źródła bez zmian)
     #[arg(long = "1080p", visible_alias = "scale-1080")]
     scale_1080: bool,
+    /// Pełny log przebiegu do pliku w katalogu wyjściowym (wszystkie wywołania i wyjście narzędzi)
+    #[arg(long = "log-file", visible_alias = "full-log")]
+    full_log: bool,
     /// Tryb skryptowy także bez ścieżek (wtedy katalog bieżący, jak w V9)
     #[arg(short = 'b', long)]
     batch: bool,
@@ -310,6 +313,7 @@ fn real_main() -> Result<i32> {
         no_hdr10plus: cli.no_hdr10plus,
         legacy_inject: cli.legacy_inject,
         scale_1080: cli.scale_1080,
+        full_log: cli.full_log,
         shutdown: cli.shutdown,
         output_dir: platform::default_output_dir(),
         container: cli.container.as_deref().and_then(ContainerChoice::from_name).unwrap_or(ContainerChoice::Auto),

@@ -47,6 +47,43 @@ fn run(opts: &Opts, files: &[PathBuf], panel: &Panel) -> Result<()> {
             panel.register(&n.to_string_lossy());
         }
     }
+    if opts.full_log {
+        let _ = fs::create_dir_all(&opts.output_dir);
+        let path = opts
+            .output_dir
+            .join(format!("videopipeline_{}.log", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")));
+        match crate::log::open_file(&path) {
+            Ok(()) => {
+                plog!("Pełny log: {}", path.display());
+                crate::log::file_line(&format!(
+                    "VideoPipeline {} · {} {} · {}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    std::env::args().collect::<Vec<_>>().join(" ")
+                ));
+                crate::log::file_line(&format!("Ustawienia: {opts:?}"));
+                for f in files {
+                    crate::log::file_line(&format!("Plik: {}", f.display()));
+                }
+            }
+            Err(e) => plog!("UWAGA: nie można utworzyć pełnego logu {}: {e}", path.display()),
+        }
+    }
+    let res = run_inner(opts, files, panel);
+    if let Err(e) = &res {
+        plog!("BŁĄD: {e:#}");
+    }
+    if proc::cancelled() {
+        plog!("Przerwano.");
+    }
+    if let Some(p) = crate::log::close_file() {
+        plog!("Pełny log zapisany: {}", p.display());
+    }
+    res
+}
+
+fn run_inner(opts: &Opts, files: &[PathBuf], panel: &Panel) -> Result<()> {
     panel.draw("PRE-FLIGHT");
     plog!("Pre-flight: sprawdzam FFmpeg / {}...", opts.engine.label());
     let rt = preflight::run(opts)?;

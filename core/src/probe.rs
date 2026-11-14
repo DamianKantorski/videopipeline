@@ -1,3 +1,4 @@
+use crate::log::LoggedOutput;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
@@ -109,7 +110,7 @@ pub fn probe(input: &Path) -> Result<Media> {
     let out = crate::proc::command("ffprobe")
         .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
         .arg(input)
-        .output()
+        .logged_output()
         .context("nie można uruchomić ffprobe")?;
     if !out.status.success() {
         bail!("ffprobe zakończył się błędem dla {}", input.display());
@@ -150,7 +151,7 @@ pub fn stream_codecs(input: &Path) -> HashMap<u32, (String, u32)> {
         .args(["-v", "error", "-show_streams", "-of", "json"])
         .arg(input)
         .stdin(std::process::Stdio::null())
-        .output()
+        .logged_output()
     else {
         return HashMap::new();
     };
@@ -167,7 +168,7 @@ fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
         .args(args)
         .args(["-of", "default=noprint_wrappers=1:nokey=1"])
         .arg(path)
-        .output()
+        .logged_output()
         .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
@@ -179,7 +180,7 @@ pub fn video_codec_diag(path: &Path) -> (Option<String>, String) {
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name"])
         .args(["-of", "default=noprint_wrappers=1:nokey=1"])
         .arg(path)
-        .output();
+        .logged_output();
     match out {
         Ok(o) => {
             let s = String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).map(String::from);

@@ -36,6 +36,7 @@ const OPTION_HELP: [&str; OPTION_COUNT] = [
     "Bez ekstrakcji i wstrzykiwania Dolby Vision — wynik zostaje zwykłym HDR10.",
     "Bez ekstrakcji i wstrzykiwania HDR10+ — zostaje statyczny HDR10.",
     "Domyślnie w locie. Zaznaczone: stara ścieżka (pliki .hevc + mkvmerge).",
+    "Plik videopipeline_<data>.log w katalogu wyjściowym: wywołania i wyjście narzędzi.",
     "Kopia do <źródło>/encoded, do 3 prób z weryfikacją SHA-512.",
     "Wyłącza komputer 10 s po zakończeniu (dowolny klawisz anuluje).",
     "Enter — edytuj, Enter — zatwierdź, Esc — anuluj.",
@@ -525,6 +526,9 @@ fn summary(o: &Opts) -> String {
     if o.scale_1080 {
         parts.push("1080p".into());
     }
+    if o.full_log {
+        parts.push("pełny log".into());
+    }
     if o.copy {
         parts.push("kopia → encoded".into());
     }
@@ -687,9 +691,11 @@ fn render_right(f: &mut Frame, area: Rect, q: &mut Queue, snap: &Snapshot, activ
                 let full = it.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 let name: String = if Some(i) == sel && shift > 0 { full.chars().skip(shift).collect() } else { full.clone() };
                 let marked = q.marked.contains(&it.path);
-                let st = snap.items.get(&full).map(|i| i.state);
+                let st = snap.items.get(&full);
                 let (label, color) = match st {
-                    Some(s) => (s.label(), state_color(s)),
+                    // Po analizie, przed startem kodera: plik czeka na wolny koder.
+                    Some(i) if i.state == State::Nvenc && i.progress_file.is_none() => ("W KOLEJCE", DIM),
+                    Some(i) => (i.state.label(), state_color(i.state)),
                     None => ("", DIM),
                 };
                 ListItem::new(Line::from(vec![
@@ -744,7 +750,7 @@ fn render_fkeys(f: &mut Frame, area: Rect) {
 // --------------------------------------------------------------- okienka ---
 
 fn render_options(f: &mut Frame, area: Rect, app: &App) {
-    let rect = centered(area, 78, 24);
+    let rect = centered(area, 78, 25);
     f.render_widget(Clear, rect);
     let block = dialog_block("Opcje videopipeline", BOX_QUEUE);
     let inner = block.inner(rect);
@@ -786,6 +792,7 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
         (format!("{} Pomiń analizę Dolby Vision   (-pdv)", chk(o.no_dv)), String::new()),
         (format!("{} Pomiń analizę HDR10+   (-ph)", chk(o.no_hdr10plus)), String::new()),
         (format!("{} DV/HDR10+ przez pliki tymczasowe   (--legacy-inject)", chk(o.legacy_inject)), String::new()),
+        (format!("{} Pełny log do pliku   (--log-file)", chk(o.full_log)), String::new()),
         (format!("{} Kopiuj do source/encoded + SHA-512   (-c)", chk(o.copy)), String::new()),
         (format!("{} Wyłącz komputer po zakończeniu   (-s)", chk(o.shutdown)), String::new()),
         ("Katalog wyjściowy".into(), tail(&out_val, w.saturating_sub(24))),
@@ -1253,17 +1260,21 @@ fn run_lines(
             out.push(Line::from(Span::styled(format!("  … i {} więcej", rest.len() - i), fg(DIM))));
             break;
         }
-        let c = state_color(r.1.state);
+        // Po analizie plik ma stan „kodowanie”, ale czeka na wolny koder — bez postępu do pokazania.
+        let queued = r.1.state == State::Nvenc && r.1.progress_file.is_none();
+        let c = if queued { DIM } else { state_color(r.1.state) };
+        let label = if queued { "W KOLEJCE" } else { r.1.state.label() };
+        let note = if queued { "czeka na wolny koder" } else { r.1.note.as_str() };
         let mut l = vec![
             Span::styled("● ", fg(c)),
             Span::styled(pad(r.0, 28), fg(TEXT)),
             Span::raw(" "),
-            Span::styled(pad(r.1.state.label(), 12), fg(c)),
+            Span::styled(pad(label, 12), fg(c)),
             Span::raw(" "),
         ];
         l.extend(meter(r.2, 16));
         l.push(pct_span(r.2));
-        l.push(Span::styled(format!(" {}", trunc(&r.1.note, note_w)), fg(DIM)));
+        l.push(Span::styled(format!(" {}", trunc(note, note_w)), fg(DIM)));
         out.push(Line::from(l));
     }
 

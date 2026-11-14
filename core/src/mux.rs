@@ -23,7 +23,7 @@ fn s(p: &Path) -> String {
 
 fn encode_audio(input: &Path, idx: u32, bitrate: &str, channels: &str, lang: &str, out: &Path) -> bool {
     let args: Vec<String> = [
-        "-hide_banner", "-loglevel", "quiet", "-i", &s(input), "-map", &format!("0:{idx}"),
+        "-hide_banner", "-loglevel", if crate::log::full() { "info" } else { "quiet" }, "-i", &s(input), "-map", &format!("0:{idx}"),
         "-c:a", "eac3", "-b:a", bitrate, "-ac", channels, "-metadata:s:a:0",
         &format!("language={lang}"), &s(out),
     ]

@@ -182,7 +182,7 @@ pub struct RenameCtx {
     pub input: TextInput,
 }
 
-pub const OPTION_COUNT: usize = 17;
+pub const OPTION_COUNT: usize = 18;
 /// Indeksy wierszy w oknie opcji (F7).
 pub const OPT_HEVC_CQ: usize = 1;
 pub const OPT_AV1_CQ: usize = 2;
@@ -1277,9 +1277,10 @@ impl App {
             11 => self.opts.no_dv = !self.opts.no_dv,
             12 => self.opts.no_hdr10plus = !self.opts.no_hdr10plus,
             13 => self.opts.legacy_inject = !self.opts.legacy_inject,
-            14 => self.opts.copy = !self.opts.copy,
-            15 => self.opts.shutdown = !self.opts.shutdown,
-            16 => self.opt_edit = Some(self.opts.output_dir.to_string_lossy().to_string()),
+            14 => self.opts.full_log = !self.opts.full_log,
+            15 => self.opts.copy = !self.opts.copy,
+            16 => self.opts.shutdown = !self.opts.shutdown,
+            17 => self.opt_edit = Some(self.opts.output_dir.to_string_lossy().to_string()),
             _ => {}
         }
     }

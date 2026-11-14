@@ -77,30 +77,38 @@ fn extract_hevc(
         name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>()
     ));
     let _ = fs::remove_file(&pf);
-    let Ok(mut ff) = crate::proc::command("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "quiet", "-nostats", "-progress"])
+    let full = crate::log::full();
+    let mut caps: Vec<crate::log::Capture> = vec![];
+    let ff_cap = crate::log::Capture::new(&format!("ffmpeg (odczyt HEVC do analizy) — {name}"));
+    let mut ff_cmd = crate::proc::command("ffmpeg");
+    ff_cmd
+        .args(["-hide_banner", "-loglevel", if full { "info" } else { "quiet" }, "-nostats", "-progress"])
         .arg(&pf)
         .arg("-i")
         .arg(input)
         .args(["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+        .stderr(crate::log::stdio(&ff_cap));
+    if full {
+        crate::log::file_line(&format!("$ {}", crate::log::cmdline(&ff_cmd)));
+    }
+    let Ok(mut ff) = ff_cmd.spawn() else {
         return;
     };
+    caps.extend(ff_cap);
     proc::register(ff.id());
     let mut children = vec![];
     let mut sinks = vec![];
     for (tool, args) in tools {
-        match crate::proc::command(tool)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+        let cap = crate::log::Capture::new(&format!("{tool} — {name}"));
+        let mut cmd = crate::proc::command(tool);
+        cmd.args(args).stdin(Stdio::piped()).stdout(crate::log::stdio(&cap)).stderr(crate::log::stdio(&cap));
+        if full {
+            crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
+        }
+        caps.extend(cap);
+        match cmd.spawn() {
             Ok(mut c) => {
                 proc::register(c.id());
                 sinks.push(c.stdin.take());
@@ -183,6 +191,9 @@ fn extract_hevc(
     }
     if let Some(t) = tee {
         let _ = t.join();
+    }
+    for c in caps {
+        c.finish();
     }
     let _ = fs::remove_file(&pf);
 }

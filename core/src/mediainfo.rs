@@ -1,6 +1,7 @@
 //! Informacje o pliku przez program MediaInfo (dołączony do paczek, jak ffmpeg).
 //! `easy` — skrót w stylu widoku „Easy” z MediaInfo GUI (do okienka F2),
 //! `full` — pełny raport tekstowy `mediainfo <plik>` (tryb skryptowy).
+use crate::log::LoggedOutput;
 use serde_json::Value;
 use std::{
     path::Path,
@@ -17,7 +18,7 @@ fn run(args: &[&std::ffi::OsStr]) -> Result<String, String> {
     let out = crate::proc::command("mediainfo")
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .logged_output()
         .map_err(|e| format!("nie można uruchomić mediainfo: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();

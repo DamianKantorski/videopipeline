@@ -43,6 +43,9 @@ fn summary(o: &Opts) -> String {
     if o.scale_1080 {
         p.push("skalowanie do 1080p");
     }
+    if o.full_log {
+        p.push("pełny log do pliku");
+    }
     if o.copy {
         p.push("kopia → encoded");
     }

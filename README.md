@@ -185,6 +185,7 @@ Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecno�
 | `-d` | łagodne odszumianie (tylko źródła SDR 8-bit; CUDA, vpp_qsv / denoise_vaapi albo CPU) |
 | `-pc` | bez wykrywania czarnych pasów (najdłuższy etap analizy) |
 | `--1080p` | zmniejszenie obrazu do 1920×1080 z zachowaniem proporcji (po kadrowaniu, np. 3840×1600 → 1920×800); mniejsze źródła bez zmian. NVIDIA: na CPU (Lanczos) przed NVENC, Intel: `vpp_qsv` / `scale_vaapi` na karcie. Obszar aktywny Dolby Vision (L5) jest przeliczany. Nazwa wyniku dostaje `_1080p` |
+| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg, ffprobe, dovi_tool, hdr10plus_tool, mkvmerge, mediainfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
 | `--legacy-inject` | Dolby Vision / HDR10+ starą ścieżką: plik tymczasowy `.hevc`, dovi_tool / hdr10plus_tool i mkvmerge (domyślnie w locie, bez plików pośrednich) |
 | `-pdv`, `-ph` | bez Dolby Vision / bez HDR10+ |
 | `-c` | kopia wyniku do `<katalog źródła>/encoded` z weryfikacją SHA-512 |

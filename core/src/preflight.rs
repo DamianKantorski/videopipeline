@@ -1,9 +1,10 @@
+use crate::log::LoggedOutput;
 use crate::config::*;
 use anyhow::{bail, Result};
 use std::{fs, path::Path};
 
 fn ffmpeg_text(args: &[&str]) -> String {
-    match crate::proc::command("ffmpeg").args(args).output() {
+    match crate::proc::command("ffmpeg").args(args).logged_output() {
         Ok(o) => format!(
             "{}\n{}",
             String::from_utf8_lossy(&o.stdout),
@@ -25,7 +26,7 @@ fn av1_selftest(tune: &str, cq: u8, out: &Path) -> bool {
         .args(["-b_ref_mode", "middle", "-multipass", "fullres"])
         .args(["-rc-lookahead", "32", "-highbitdepth", "1", "-pix_fmt", "yuv420p"])
         .arg(out)
-        .output()
+        .logged_output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     let valid = ok
@@ -231,10 +232,8 @@ fn ffmpeg_ok(args: &[String]) -> bool {
     crate::proc::command("ffmpeg")
         .args(args)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .logged_output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Najlepsze działające mapowanie tonów dla wybranej karty: libplacebo (Vulkan, jakość jak w mpv),

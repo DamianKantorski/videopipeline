@@ -1,6 +1,7 @@
 //! Wykrywanie sprzętowych enkoderów: NVIDIA NVENC, Intel QSV i Intel VAAPI.
 //! Sama obecność enkodera w `ffmpeg -encoders` nic nie gwarantuje (brak karty, sterownika,
 //! runtime'u oneVPL), więc każdy kandydat przechodzi krótkie, prawdziwe kodowanie testowe.
+use crate::log::LoggedOutput;
 use crate::config::{Codec, Engine};
 use std::{
     path::{Path, PathBuf},
@@ -303,7 +304,7 @@ pub fn detect_report() -> (HwInfo, Vec<TestReport>, Vec<(String, bool, String, S
 
 /// Wersja ffmpeg (pierwsza linia `ffmpeg -version`).
 pub fn ffmpeg_version() -> Option<String> {
-    let out = crate::proc::command("ffmpeg").arg("-version").stdin(Stdio::null()).output().ok()?;
+    let out = crate::proc::command("ffmpeg").arg("-version").stdin(Stdio::null()).logged_output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().next().map(str::to_string)
 }
 
@@ -312,7 +313,7 @@ fn ffmpeg_encoders() -> Option<Vec<String>> {
     let out = crate::proc::command("ffmpeg")
         .args(["-hide_banner", "-nostdin", "-encoders"])
         .stdin(Stdio::null())
-        .output()
+        .logged_output()
         .ok()?;
     if !out.status.success() {
         return None;

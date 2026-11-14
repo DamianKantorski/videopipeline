@@ -1091,6 +1091,7 @@ name = "videopipeline-core"
 version = "0.18.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "dolby_vision",
  "hdr10plus",
  "serde",

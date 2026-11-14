@@ -65,6 +65,18 @@ pub fn kill_all() {
 /// Uruchamia polecenie (stdout/stderr -> null), zwraca kod wyjścia.
 /// stdin ustawia wołający.
 pub fn run(cmd: &mut Command) -> Option<i32> {
+    if crate::log::full() {
+        // Pełny log: wyjście narzędzia zbierane i zapisywane razem z wywołaniem.
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = cmd.spawn().ok()?;
+        let id = child.id();
+        register(id);
+        let out = child.wait_with_output();
+        unregister(id);
+        let out = out.ok()?;
+        crate::log::tool(cmd, out.status.code(), &out.stdout, &out.stderr);
+        return out.status.code();
+    }
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = cmd.spawn().ok()?;
     let id = child.id();
@@ -82,5 +94,8 @@ pub fn output(cmd: &mut Command) -> Option<Output> {
     register(id);
     let out = child.wait_with_output().ok();
     unregister(id);
+    if let Some(o) = &out {
+        crate::log::tool(cmd, o.status.code(), &o.stdout, &o.stderr);
+    }
     out
 }

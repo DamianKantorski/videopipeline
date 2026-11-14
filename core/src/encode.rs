@@ -97,7 +97,8 @@ fn live_encoder_out() -> OutSpec {
 /// Tryb w locie, drugi ffmpeg: wideo z metadanymi (Matroska z potoku) + audio i napisy źródła.
 fn live_mux_args(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> Vec<String> {
     let info = probe::stream_codecs(&a.input_file);
-    let mut v = sv(&["-hide_banner", "-nostats", "-loglevel", "warning", "-f", "matroska", "-i", "pipe:0", "-i"]);
+    let level = if crate::log::full() { "info" } else { "warning" };
+    let mut v = sv(&["-hide_banner", "-nostats", "-loglevel", level, "-f", "matroska", "-i", "pipe:0", "-i"]);
     v.push(a.input_file.to_string_lossy().into());
     v.extend(sv(&["-map", "0:v:0", "-c:v", "copy"]));
     let (src, _) = crate::mux::source_streams(opts, a, p.container, 1, true, &info);
@@ -672,6 +673,7 @@ fn start(
     } else {
         cmd.stdout(Stdio::from(logf));
     }
+    crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
     let mut child = cmd.spawn()?;
     proc::register(child.id());
     let live = match fps {
@@ -711,12 +713,14 @@ fn start_live(
 ) -> std::io::Result<Live> {
     let mux_log = rt.progress_dir.join(format!("{key}.mux.log"));
     let logf = File::create(&mux_log)?;
-    let mut mux = crate::proc::command("ffmpeg")
+    let mut mux_cmd = crate::proc::command("ffmpeg");
+    mux_cmd
         .args(live_mux_args(opts, a, p, part))
         .stdin(Stdio::piped())
         .stdout(Stdio::from(logf.try_clone()?))
-        .stderr(Stdio::from(logf))
-        .spawn()?;
+        .stderr(Stdio::from(logf));
+    crate::log::file_line(&format!("$ {}", crate::log::cmdline(&mux_cmd)));
+    let mut mux = mux_cmd.spawn()?;
     proc::register(mux.id());
     let (Some(enc_out), Some(mux_in)) = (encoder.stdout.take(), mux.stdin.take()) else {
         let _ = mux.kill();
@@ -743,6 +747,7 @@ fn finish_live(name: &str, live: Live) -> bool {
     let injected = thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("wątek wstrzykujący przerwany")));
     let mux_ok = mux.wait().map(|s| s.success()).unwrap_or(false);
     proc::unregister(mux.id());
+    crate::log::append_file(&format!("ffmpeg — składanie pliku (w locie) {name}"), &mux_log);
     let ok = match injected {
         Ok(st) => {
             let dv = if st.rpus > 0 { format!(", Dolby Vision poziom {}", st.dv_level) } else { String::new() };
@@ -775,6 +780,7 @@ fn finish_live(name: &str, live: Live) -> bool {
 
 fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
     proc::unregister(r.child.id());
+    crate::log::append_file(&format!("ffmpeg — kodowanie {} ({status})", r.name), &r.log);
     let live = r.live.is_some();
     let live_ok = match r.live.take() {
         Some(l) => finish_live(&r.name, l),
