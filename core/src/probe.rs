@@ -173,6 +173,23 @@ fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Jak video_codec, ale z komunikatem ffprobe (stderr) — do diagnostyki odrzuconych plików.
+pub fn video_codec_diag(path: &Path) -> (Option<String>, String) {
+    let out = crate::proc::command("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name"])
+        .args(["-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(path)
+        .output();
+    match out {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).map(String::from);
+            let e = String::from_utf8_lossy(&o.stderr).lines().take(3).collect::<Vec<_>>().join(" | ");
+            (s, if e.is_empty() && !o.status.success() { format!("ffprobe {}", o.status) } else { e })
+        }
+        Err(e) => (None, format!("nie można uruchomić ffprobe: {e}")),
+    }
+}
+
 pub fn video_codec(path: &Path) -> Option<String> {
     probe_value(path, &["-select_streams", "v:0", "-show_entries", "stream=codec_name"])
 }

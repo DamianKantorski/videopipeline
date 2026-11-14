@@ -567,14 +567,22 @@ fn build_args_intel(
 }
 
 /// Sukces = niepusty plik + progress=end + właściwy kodek.
-fn result_valid(opts: &Opts, out: &Path, pf: &Path) -> bool {
-    if !fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false) {
-        return false;
+/// Sprawdzenie pliku po kodowaniu; Err = powód odrzucenia (do logu i panelu).
+fn result_check(opts: &Opts, out: &Path, pf: &Path) -> Result<(), String> {
+    match fs::metadata(out) {
+        Ok(m) if m.len() > 0 => {}
+        Ok(_) => return Err(format!("pusty plik {}", out.display())),
+        Err(e) => return Err(format!("brak pliku {}: {e}", out.display())),
     }
     if !read_progress(pf).ended {
-        return false;
+        return Err("ffmpeg nie zgłosił końca zapisu (brak progress=end)".into());
     }
-    probe::video_codec(out).as_deref() == Some(opts.codec.name())
+    let (codec, err) = probe::video_codec_diag(out);
+    match codec.as_deref() {
+        Some(c) if c == opts.codec.name() => Ok(()),
+        Some(c) => Err(format!("ffprobe: kodek wideo {c}, oczekiwany {}", opts.codec.name())),
+        None => Err(format!("ffprobe nie odczytał wideo z pliku{}", if err.is_empty() { String::new() } else { format!(": {err}") })),
+    }
 }
 
 /// HEVC: stara semantyka V9 (istnienie pliku). AV1: kodek + długość ≈ źródło.
@@ -779,7 +787,8 @@ fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
         panel.set(&r.name, State::Waiting, "Przerwano");
         return;
     }
-    if status.success() && live_ok && result_valid(opts, &r.output, &r.pf) {
+    let check = if status.success() && live_ok { result_check(opts, &r.output, &r.pf) } else { Err(String::new()) };
+    if check.is_ok() {
         if let Some(fin) = &r.final_out {
             // Tryb bezpośredni: gotowy plik wynikowy dopiero po pełnym zapisie (.part → nazwa docelowa).
             if let Err(e) = fs::rename(&r.output, fin) {
@@ -795,12 +804,19 @@ fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
             plog!(" -> ffmpeg [{}]: ZAKOŃCZONY + PLIK OK", r.name);
         }
     } else {
+        let why = check.err().filter(|w| !w.is_empty());
         panel.set(
             &r.name,
             State::Error,
-            format!("{} nie utworzył poprawnego pliku ({status})", opts.engine.label()),
+            match &why {
+                Some(w) => format!("{} — plik odrzucony: {w}", opts.engine.label()),
+                None => format!("{} nie utworzył poprawnego pliku ({status})", opts.engine.label()),
+            },
         );
-        plog!(" -> ffmpeg [{}]: BŁĄD kodowania ({status})", r.name);
+        match &why {
+            Some(w) => plog!(" -> ffmpeg [{}]: zakończony ({status}), ale plik odrzucony: {w}", r.name),
+            None => plog!(" -> ffmpeg [{}]: BŁĄD kodowania ({status})", r.name),
+        }
         if let Ok(log) = fs::read_to_string(&r.log) {
             let lines: Vec<&str> = log.lines().collect();
             let from = lines.len().saturating_sub(12);
@@ -808,7 +824,15 @@ fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
                 plog!("    {l}");
             }
         }
-        let _ = fs::remove_file(&r.output);
+        if why.is_some() && status.success() {
+            // ffmpeg skończył bez błędu — plik zostaje do sprawdzenia (nie jest uznawany za gotowy).
+            let keep = PathBuf::from(format!("{}.odrzucony", r.output.display()));
+            if fs::rename(&r.output, &keep).is_ok() {
+                plog!("    plik zostawiony do sprawdzenia: {}", keep.display());
+            }
+        } else {
+            let _ = fs::remove_file(&r.output);
+        }
     }
 }
 
