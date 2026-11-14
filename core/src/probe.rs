@@ -162,16 +162,24 @@ pub fn stream_codecs(input: &Path) -> HashMap<u32, (String, u32)> {
         .collect()
 }
 
-fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
-    let out = crate::proc::command("ffprobe")
+/// Wartości z ffprobe, po jednej na linię. ffprobe 9 potrafi wypisać ten sam strumień więcej niż raz
+/// (np. także w grupie strumieni / programie) — wołający biorą pierwsze wartości, nie cały tekst.
+fn probe_lines(path: &Path, args: &[&str]) -> Vec<String> {
+    let Ok(out) = crate::proc::command("ffprobe")
         .args(["-v", "error"])
         .args(args)
         .args(["-of", "default=noprint_wrappers=1:nokey=1"])
         .arg(path)
         .logged_output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    else {
+        return vec![];
+    };
+    String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+/// Pierwsza wartość z ffprobe (zapytanie o jedno pole).
+fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
+    probe_lines(path, args).into_iter().next()
 }
 
 /// Jak video_codec, ale z komunikatem ffprobe (stderr) — do diagnostyki odrzuconych plików.
@@ -203,8 +211,8 @@ pub fn video_fps(path: &Path) -> Option<String> {
 
 /// Wymiary pierwszego strumienia wideo (w pikselach kodowanych).
 pub fn video_size(path: &Path) -> Option<(u32, u32)> {
-    let s = probe_value(path, &["-select_streams", "v:0", "-show_entries", "stream=width,height"])?;
-    let mut it = s.lines().filter_map(|l| l.trim().parse::<u32>().ok());
+    let s = probe_lines(path, &["-select_streams", "v:0", "-show_entries", "stream=width,height"]);
+    let mut it = s.iter().filter_map(|l| l.parse::<u32>().ok());
     Some((it.next()?, it.next()?)).filter(|(w, h)| *w > 0 && *h > 0)
 }
 

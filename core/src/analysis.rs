@@ -218,11 +218,10 @@ fn detect_crop(
     name: &str,
     panel: &Panel,
 ) -> Option<String> {
-    let mut dur = duration.unwrap_or(0.0) as u64;
-    if dur <= 600 {
-        dur = 7200;
-    }
-    let points: Vec<u64> = (15..=85).step_by(10).map(|p| dur * p / 100).collect();
+    // Próbki od 15% do 85% długości filmu. Długość nieznana — założenie 2 h (jak dawniej).
+    // Krótkie pliki (np. klipy z aparatu) też — wcześniej poniżej 10 minut punkty wypadały za końcem.
+    let dur = duration.filter(|d| *d > 1.0).unwrap_or(7200.0);
+    let points: Vec<String> = (15..=85).step_by(10).map(|p| format!("{:.3}", dur * p as f64 / 100.0)).collect();
     let mut found: Vec<String> = vec![];
 
     for (i, ts) in points.iter().enumerate() {
@@ -238,9 +237,9 @@ fn detect_crop(
         }
         let Some(out) = proc::output(
             crate::proc::command("ffmpeg")
-                .args(["-hide_banner", "-ss", &ts.to_string(), "-i"])
+                .args(["-hide_banner", "-ss", ts.as_str(), "-i"])
                 .arg(input)
-                .args(["-vframes", "15", "-vf"])
+                .args(["-an", "-sn", "-dn", "-vframes", "15", "-vf"])
                 .arg("format=yuv420p,gblur=sigma=2,cropdetect=limit=24:round=16:reset=0")
                 .args(["-f", "null", "-"]),
         ) else {
