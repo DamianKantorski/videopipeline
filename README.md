@@ -198,6 +198,10 @@ podobną, ale nie taką samą jakość i rozmiar. AVC ma te same priorytety jako
 adaptacyjna kwantyzacja przestrzenna i czasowa, B-klatki referencyjne, pełny multipass, lookahead 32 klatek i CABAC;
 na Intelu profil High z ICQ (QSV) albo CQP (VAAPI).
 
+**Pełny zakres jasności.** Materiał z aparatów i telefonów bywa zapisany w pełnym zakresie (0–255, `yuvj420p`). Część
+odtwarzaczy ignoruje ten znacznik w HEVC/AV1 i pokazuje obraz wyblakły albo przepalony, więc program przelicza go
+do standardowego zakresu TV (16–235) — razem ze skalowaniem, na CPU albo w `vpp_qsv` / `scale_vaapi` (Intel).
+
 **Mapowanie tonów HDR → SDR (AVC).** AVC jest 8-bitowe, więc film HDR trzeba przeliczyć do SDR, inaczej wyglądałby
 wyprano i z pasmami. Domyślnie robi to **libplacebo** przez Vulkan — ten sam silnik, którego używa mpv (`gpu-next`),
 z tymi samymi ustawieniami: krzywa „auto”, perceptualne mapowanie gamy, wykrywanie szczytowej jasności sceny,

@@ -177,7 +177,9 @@ fn build_args_nvenc(
     // Kadrowanie i skalowanie na CPU: NVENC i tak dostaje klatki z pamięci (dekodowanie CUDA bez
     // -hwaccel_output_format). Skalowanie przed odszumianiem / mapowaniem tonów — mniej pikseli dalej.
     let scale = scale_target(opts, a);
-    let pre: Vec<String> = a.crop.iter().cloned().chain(scale.as_ref().map(|s| s.cpu())).collect();
+    // Pełny zakres (aparaty) → ograniczony; przy mapowaniu tonów robi to filtr mapujący.
+    let range_fix = a.color.full_range() && !(opts.codec == Codec::Avc && a.color.is_hdr());
+    let pre: Vec<String> = a.crop.iter().cloned().chain(cpu_scale_range(scale.as_ref(), range_fix)).collect();
 
     // AVC jest zawsze 8-bit SDR (źródła HDR odrzuca analiza; 10-bit SDR jest przeliczane do 8 bitów).
     let avc = opts.codec == Codec::Avc;
@@ -284,10 +286,13 @@ fn build_args_nvenc(
     v.extend(scope_v(enc));
     v.extend(scope_v(fmt));
     v.extend(out.tail.iter().cloned());
-    let note = match &scale {
+    let mut note = match &scale {
         Some(s) => format!("{note} · skalowanie {}x{} → {}x{}", s.src.0, s.src.1, s.dst.0, s.dst.1),
         None => note.to_string(),
     };
+    if range_fix {
+        note.push_str(" · pełny zakres → TV");
+    }
     (v, note)
 }
 
@@ -328,6 +333,16 @@ pub(crate) fn scale_target(opts: &Opts, a: &Analysis) -> Option<Scale> {
         None => probe::video_size(&a.input_file)?,
     };
     fit_1080(src.0, src.1).map(|dst| Scale { src, dst })
+}
+
+/// Filtr CPU: skalowanie i/lub przeliczenie pełnego zakresu jasności (pc) na ograniczony (tv).
+fn cpu_scale_range(scale: Option<&Scale>, range_fix: bool) -> Option<String> {
+    let range = if range_fix { ":in_range=pc:out_range=tv" } else { "" };
+    match scale {
+        Some(s) => Some(format!("{}{range}", s.cpu())),
+        None if range_fix => Some("scale=in_range=pc:out_range=tv".into()),
+        None => None,
+    }
 }
 
 /// "crop=W:H:X:Y" → (W, H, X, Y)
@@ -371,6 +386,7 @@ fn build_args_intel(
     let denoise = opts.denoise && c.is_sdr_8bit && rt.denoise != Denoise::Off;
     // AVC ze źródła HDR: mapowanie tonów (sprzętowe Intel albo CPU — wtedy klatki przez pamięć).
     let tonemap = opts.codec == Codec::Avc && c.is_hdr();
+    let range_fix = c.full_range() && !tonemap;
     let placebo = tonemap && rt.tonemap == Tonemap::Placebo && opts.engine == Engine::Qsv;
     let cpu_tonemap = tonemap && !placebo && !matches!(rt.tonemap, Tonemap::Qsv | Tonemap::Vaapi);
     let cq = opts.cq() as u32;
@@ -392,6 +408,9 @@ fn build_args_intel(
     }
     if let Some(s) = &scale {
         notes.push(format!("skalowanie {}x{} → {}x{}", s.src.0, s.src.1, s.dst.0, s.dst.1));
+    }
+    if range_fix {
+        notes.push("pełny zakres → TV".into());
     }
     let decoder;
     let enc: Vec<String>;
@@ -432,8 +451,8 @@ fn build_args_intel(
                 }
                 if placebo {
                     chain.push(tonemap_placebo(scale.as_ref(), if ten_bit { "p010le" } else { "nv12" }));
-                } else if let Some(s) = &scale {
-                    chain.push(s.cpu());
+                } else if let Some(f) = cpu_scale_range(scale.as_ref(), range_fix) {
+                    chain.push(f);
                 }
                 if cpu_tonemap {
                     chain.push(TONEMAP_CPU.into());
@@ -459,6 +478,9 @@ fn build_args_intel(
                 }
                 if tonemap {
                     vpp.push(TONEMAP_QSV.into());
+                }
+                if range_fix {
+                    vpp.push("out_range=tv".into());
                 }
                 vpp.push(format!("format={}", if ten_bit { "p010" } else { "nv12" }));
                 v.extend(sv(&["-vf", &format!("vpp_qsv={}", vpp.join(":"))]));
@@ -500,8 +522,8 @@ fn build_args_intel(
                 if let Some(cr) = &a.crop {
                     chain.push(cr.clone());
                 }
-                if let Some(s) = &scale {
-                    chain.push(s.cpu());
+                if let Some(f) = cpu_scale_range(scale.as_ref(), range_fix) {
+                    chain.push(f);
                 }
                 if cpu_denoise {
                     chain.push(DENOISE_CPU_FILTER.into());
@@ -528,7 +550,8 @@ fn build_args_intel(
                         chain.push(format!("scale_vaapi={size}format=nv12"));
                     }
                 } else {
-                    chain.push(format!("scale_vaapi={size}format={}", if ten_bit { "p010" } else { "nv12" }));
+                    let range = if range_fix { "out_range=tv:" } else { "" };
+                    chain.push(format!("scale_vaapi={size}{range}format={}", if ten_bit { "p010" } else { "nv12" }));
                 }
             }
             if denoise && rt.denoise == Denoise::Intel {

@@ -52,6 +52,13 @@ impl ColorProfile {
     pub fn is_hdr(&self) -> bool {
         matches!(self.trc.as_str(), "smpte2084" | "arib-std-b67")
     }
+
+    /// Pełny zakres jasności (0–255), typowy dla aparatów i telefonów (yuvj420p, „pc”). Wynik jest
+    /// przeliczany do zakresu ograniczonego (16–235) — część odtwarzaczy ignoruje znacznik pełnego
+    /// zakresu w HEVC/AV1 i pokazuje wtedy wyblakły albo przepalony obraz.
+    pub fn full_range(&self) -> bool {
+        matches!(self.range.as_str(), "pc" | "jpeg") || self.pix_fmt.starts_with("yuvj")
+    }
 }
 
 pub struct Media {
@@ -98,11 +105,8 @@ fn color_from(s: &StreamJson) -> ColorProfile {
     if known(&c.space) {
         c.sdr_space = c.space.clone();
     }
-    match c.range.as_str() {
-        "pc" | "jpeg" => c.sdr_range = "pc".into(),
-        "tv" | "mpeg" => c.sdr_range = "tv".into(),
-        _ => {}
-    }
+    // Wynik zawsze w zakresie ograniczonym: pełny zakres źródła jest przeliczany w filtrach
+    // (encode.rs: range_fix), więc znacznik „tv” jest prawdziwy.
     c
 }
 
