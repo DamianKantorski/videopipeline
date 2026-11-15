@@ -169,7 +169,7 @@ pub(crate) fn source_streams(
     let apple = probe::is_apple_device(&a.input_file);
     let mut args: Vec<String> = vec![];
     let mut n = 0usize;
-    for idx in source_audio(opts, a) {
+    for idx in usable_audio(source_audio(opts, a), info) {
         args.extend(["-map".into(), format!("{src}:{idx}")]);
         let c = codec(idx);
         let ch = info.get(&idx).map(|(_, ch)| *ch).unwrap_or(2);
@@ -215,6 +215,35 @@ pub(crate) fn source_streams(
     (args, n)
 }
 
+/// Ścieżka audio, której ffmpeg nie potrafi odczytać (np. APAC z iPhone'a w analizie zapisanej
+/// przed poprawką) — zamieniana na pierwszą odczytywalną ścieżkę audio źródła.
+fn usable_audio(ids: Vec<u32>, info: &HashMap<u32, (String, u32)>) -> Vec<u32> {
+    let mut out: Vec<u32> = vec![];
+    for idx in ids {
+        let codec = info.get(&idx).map(|(c, _)| c.as_str()).unwrap_or("");
+        let pick = if probe::decodable(codec) {
+            Some(idx)
+        } else {
+            let mut alt: Vec<u32> = info
+                .iter()
+                .filter(|(i, (c, ch))| **i != idx && *ch > 0 && !c.is_empty() && probe::decodable(c))
+                .map(|(i, _)| *i)
+                .collect();
+            alt.sort();
+            let alt = alt.into_iter().find(|i| !out.contains(i));
+            match alt {
+                Some(a) => plog!("    audio {idx} ({codec}) bez dekodera w ffmpeg — zamiast niej ścieżka {a}"),
+                None => plog!("    audio {idx} ({codec}) bez dekodera w ffmpeg — pominięta"),
+            }
+            alt
+        };
+        if let Some(i) = pick.filter(|i| !out.contains(i)) {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// Które strumienie źródła kopiujemy bez zmian (wspólne dla MKV i MP4).
 fn source_audio(opts: &Opts, a: &Analysis) -> Vec<u32> {
     if let Some(pol) = a.pol_audio {
@@ -249,7 +278,7 @@ fn mux_mkv(opts: &Opts, a: &Analysis, p: &Paths, current_video: &Path) -> Result
     let apple = probe::is_apple_device(&a.input_file);
     let mut audio: Vec<u32> = vec![];
     let mut converted: Vec<PathBuf> = vec![];
-    for idx in source_audio(opts, a) {
+    for idx in usable_audio(source_audio(opts, a), &info) {
         let (c, ch) = info.get(&idx).cloned().unwrap_or_default();
         let out = audio_out(opts.audio, Container::Mkv, &c, apple);
         if out == AudioOut::Copy {
@@ -600,5 +629,23 @@ mod audio_tests {
         assert_eq!(audio_codec_args(O::Aac, 1, "dts", 8), ["-c:a:1", "aac", "-b:a:1", "1280k"]);
         assert!(audio_codec_args(O::Flac, 0, "pcm_s24le", 2).contains(&"24".to_string()));
         assert!(audio_codec_args(O::Ac3, 0, "truehd", 8).contains(&"6".to_string()));
+    }
+
+    #[test]
+    fn undecodable_audio_is_replaced() {
+        // Wymaga ffmpeg w PATH (lista kodeków); bez niego nie ma czego sprawdzać.
+        if !probe::decodable("aac") || probe::decodable("apple_apac") {
+            return;
+        }
+        // iPhone: 0 wideo, 1 APAC (dźwięk przestrzenny, bez dekodera), 2 PCM stereo
+        let info: HashMap<u32, (String, u32)> = [
+            (0, ("hevc".to_string(), 0)),
+            (1, ("apple_apac".to_string(), 4)),
+            (2, ("pcm_s16le".to_string(), 2)),
+        ]
+        .into();
+        assert_eq!(usable_audio(vec![1], &info), [2]);
+        assert_eq!(usable_audio(vec![2], &info), [2]);
+        assert_eq!(usable_audio(vec![1, 2], &info), [2]);
     }
 }

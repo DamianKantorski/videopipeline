@@ -25,6 +25,34 @@ struct StreamJson {
     width: Option<u32>,
     #[serde(default)]
     tags: HashMap<String, String>,
+    #[serde(default)]
+    disposition: HashMap<String, i64>,
+}
+
+/// Czy ffmpeg z paczki umie zdekodować kodek (lista z `ffmpeg -codecs`, zapamiętana). Np. dźwięk
+/// przestrzenny z iPhone'a (apple_apac) nie ma dekodera — takiej ścieżki nie da się przekodować.
+/// Gdy listy nie da się odczytać, zakładamy, że tak.
+pub fn decodable(codec: &str) -> bool {
+    use std::sync::OnceLock;
+    static SET: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    let set = SET.get_or_init(|| {
+        let Ok(o) = crate::proc::command("ffmpeg").args(["-hide_banner", "-codecs"]).stdin(std::process::Stdio::null()).output()
+        else {
+            return Default::default();
+        };
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("---"))
+            .skip(1)
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let flags = it.next()?;
+                let name = it.next()?;
+                flags.starts_with('D').then(|| name.to_string())
+            })
+            .collect()
+    });
+    codec.is_empty() || set.is_empty() || set.contains(codec)
 }
 
 #[derive(Deserialize, Default)]
@@ -122,12 +150,19 @@ pub fn probe(input: &Path) -> Result<Media> {
     let j: ProbeJson = serde_json::from_slice(&out.stdout).context("zły JSON z ffprobe")?;
     let lang = |s: &StreamJson| s.tags.get("language").cloned().unwrap_or_default();
 
-    let audio = j
-        .streams
-        .iter()
-        .filter(|s| s.codec_type.as_deref() == Some("audio"))
-        .map(|s| (s.index, lang(s)))
-        .collect();
+    // Ścieżki audio, które ffmpeg potrafi odczytać; najpierw oznaczona jako domyślna (iPhone: APAC
+    // z dźwiękiem przestrzennym jest pierwsza, ale bez dekodera i nie domyślna — domyślne jest PCM).
+    let mut audio_streams: Vec<&StreamJson> = j.streams.iter().filter(|s| s.codec_type.as_deref() == Some("audio")).collect();
+    audio_streams.retain(|s| {
+        let c = s.codec_name.clone().unwrap_or_default();
+        let ok = decodable(&c);
+        if !ok {
+            plog!("    audio {} ({c}) pominięte — ffmpeg nie ma dekodera tego kodeka", s.index);
+        }
+        ok
+    });
+    audio_streams.sort_by_key(|s| if s.disposition.get("default").copied().unwrap_or(0) == 1 { 0 } else { 1 });
+    let audio = audio_streams.iter().map(|s| (s.index, lang(s))).collect();
     let subs = j
         .streams
         .iter()
