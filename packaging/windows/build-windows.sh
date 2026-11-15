@@ -3,12 +3,12 @@
 #   dist/VideoPipeline-<wersja>-windows-x86_64_v3.zip (+ .sha256)
 # Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, avformat/avcodec/avutil-*.dll (odczyt
 # informacji o plikach), ffmpeg.exe
-# (statyczne: NVENC/NVDEC/CUDA-LLVM, Intel QSV przez oneVPL + D3D11, dav1d, zlib), mkvmerge.exe
-# (oficjalna wersja przenośna MKVToolNix), MediaInfo.exe (oficjalne CLI MediaArea), dovi_tool.exe, hdr10plus_tool.exe.
+# (statyczne: NVENC/NVDEC/CUDA-LLVM, Intel QSV przez oneVPL + D3D11, dav1d, zlib), MediaInfo.dll
+# (oficjalna biblioteka MediaArea, okienko F2), mpv.exe i videopipeline-term.exe.
 # Sterowniki GPU (NVIDIA, Intel) pochodzą z systemu Windows.
 #
 # Zmienne: VERSION, FFMPEG_VERSION (latest = najnowsze wydanie), DOVI_TOOL_REF, HDR10PLUS_TOOL_REF,
-# DAV1D_REF, LIBVPL_REF, MKVTOOLNIX_VERSION, MEDIAINFO_VERSION (latest = najnowsze), NVCODEC_HEADERS_REF, TARGET_CPU, JOBS, FORCE=1.
+# DAV1D_REF, LIBVPL_REF, MEDIAINFO_VERSION (latest = najnowsze), NVCODEC_HEADERS_REF, TARGET_CPU, JOBS, FORCE=1.
 # Uruchamiane przez ./build-local.sh (TARGETS zawiera "windows").
 set -euo pipefail
 
@@ -17,8 +17,6 @@ cd "$ROOT"
 
 VERSION="${VERSION:-$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-latest}"
-DOVI_TOOL_REF="${DOVI_TOOL_REF:-2.3.4}"
-HDR10PLUS_TOOL_REF="${HDR10PLUS_TOOL_REF:-1.7.2}"
 DAV1D_REF="${DAV1D_REF:-latest}"
 LIBVPL_REF="${LIBVPL_REF:-latest}"
 # Mapowanie tonów HDR → SDR (AVC): zimg (filtr zscale) i ładowarka OpenCL (tonemap_opencl na GPU).
@@ -28,7 +26,6 @@ OPENCL_REF="${OPENCL_REF:-latest}"
 VULKAN_HEADERS_REF="${VULKAN_HEADERS_REF:-latest}"
 GLSLANG_REF="${GLSLANG_REF:-latest}"
 LIBPLACEBO_REF="${LIBPLACEBO_REF:-latest}"
-MKVTOOLNIX_VERSION="${MKVTOOLNIX_VERSION:-latest}"
 MEDIAINFO_VERSION="${MEDIAINFO_VERSION:-latest}"
 # mpv (F3): gotowa kompilacja shinchiro/mpv-winbuild-cmake (tag = data, np. 20261108); "latest" = najnowsza.
 MPV_WIN_TAG="${MPV_WIN_TAG:-latest}"
@@ -46,7 +43,7 @@ CC_W="$TRIPLE-gcc-posix"
 CXX_W="$TRIPLE-g++-posix"
 
 BUILD="$ROOT/build"
-CACHE="$BUILD/cache/win64"   # trwałe: zależności statyczne, ffmpeg, narzędzia, MKVToolNix
+CACHE="$BUILD/cache/win64"   # trwałe: zależności statyczne, ffmpeg, biblioteki FFmpeg, MediaInfo, mpv
 WORK="$BUILD/work/win64"
 PKGNAME="VideoPipeline-$VERSION-windows-x86_64_v3"
 PKG="$WORK/$PKGNAME"
@@ -86,8 +83,6 @@ resolve() {   # $1 = nazwa zmiennej, $2 = opis źródła, reszta = polecenie wyp
 # shellcheck source=../ffmpeg-source.sh
 source "$ROOT/packaging/ffmpeg-source.sh"
 resolve FFMPEG_VERSION "ffmpeg.org, GitHub, git.ffmpeg.org" ffmpeg_latest "$BUILD/work"
-resolve DOVI_TOOL_REF "github.com/quietvoid/dovi_tool" latest_git_tag https://github.com/quietvoid/dovi_tool
-resolve HDR10PLUS_TOOL_REF "github.com/quietvoid/hdr10plus_tool" latest_git_tag https://github.com/quietvoid/hdr10plus_tool
 resolve DAV1D_REF "code.videolan.org/videolan/dav1d" latest_git_tag https://code.videolan.org/videolan/dav1d.git
 # libvpl: tylko wydania 2.x — repozytorium ma też stare tagi oneVPL "v2023.x", które sortują się wyżej.
 libvpl_latest() {
@@ -100,25 +95,6 @@ resolve OPENCL_REF "github.com/KhronosGroup/OpenCL-ICD-Loader" latest_git_tag ht
 resolve VULKAN_HEADERS_REF "github.com/KhronosGroup/Vulkan-Headers" latest_git_tag https://github.com/KhronosGroup/Vulkan-Headers.git
 resolve GLSLANG_REF "github.com/KhronosGroup/glslang" latest_git_tag https://github.com/KhronosGroup/glslang.git
 resolve LIBPLACEBO_REF "github.com/haasn/libplacebo" latest_git_tag https://github.com/haasn/libplacebo.git
-# MKVToolNix — kilka źródeł po kolei, bo pojedyncze bywają niedostępne:
-# plik sprawdzania aktualizacji z mkvtoolnix.download, tagi "release-X.Y" (Codeberg, GitLab),
-# lista wydań dla Windows, a na końcu wersja już pobrana do cache.
-mkvtoolnix_latest() {
-    local v=""
-    v="$({ wget -qO- --timeout=20 https://mkvtoolnix.download/latest-release.xml.gz || true; } \
-        | { gzip -dc 2>/dev/null || true; } | { grep -oE '<version>[0-9]+\.[0-9]+(\.[0-9]+)?</version>' || true; } \
-        | sed -E 's|</?version>||g' | sort -V | tail -n1)"
-    [[ -n "$v" ]] || v="$(latest_git_tag https://codeberg.org/mbunkus/mkvtoolnix.git release-)"
-    [[ -n "$v" ]] || v="$(latest_git_tag https://gitlab.com/mbunkus/mkvtoolnix.git release-)"
-    [[ -n "$v" ]] || v="$({ wget -qO- --timeout=20 https://mkvtoolnix.download/windows/releases/ || true; } \
-        | { grep -oE 'href="[0-9]+\.[0-9]+(\.[0-9]+)?/"' || true; } | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -uV | tail -n1)"
-    if [[ -z "$v" ]]; then
-        v="$(ls -1d "$CACHE"/mkvtoolnix-* 2>/dev/null | sed 's|.*/mkvtoolnix-||' | sort -V | tail -n1)"
-        [[ -n "$v" ]] && echo "UWAGA: źródła wersji MKVToolNix niedostępne — używam pobranej wcześniej $v" >&2
-    fi
-    echo "$v"
-}
-resolve MKVTOOLNIX_VERSION "tagi release-* MKVToolNix" mkvtoolnix_latest
 # MediaInfo: tagi vRR.MM w repozytorium MediaArea; zapasowo wersja pobrana wcześniej do cache.
 mediainfo_latest() {
     local v; v="$(latest_git_tag https://github.com/MediaArea/MediaInfo.git)"
@@ -144,8 +120,7 @@ alacritty_latest() {
     echo "$v"
 }
 resolve ALACRITTY_VERSION "github.com/alacritty/alacritty" alacritty_latest
-echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, MKVToolNix $MKVTOOLNIX_VERSION, MediaInfo $MEDIAINFO_VERSION, mpv $MPV_WIN_TAG, Alacritty $ALACRITTY_VERSION," \
-     "dovi_tool $DOVI_TOOL_REF, hdr10plus_tool $HDR10PLUS_TOOL_REF"
+echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, MediaInfo $MEDIAINFO_VERSION, mpv $MPV_WIN_TAG, Alacritty $ALACRITTY_VERSION"
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 
@@ -154,14 +129,14 @@ export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 # o plikach zamiast ffprobe.exe — przed kompilacją programu (funkcja `libav`).
 LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
 if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
-    log "1/6 biblioteki FFmpeg $FFMPEG_VERSION (DLL: avformat, avcodec, avutil)"
+    log "1/5 biblioteki FFmpeg $FFMPEG_VERSION (DLL: avformat, avcodec, avutil)"
     # -static: libgcc, winpthread i zlib wkompilowane — DLL zależą tylko od systemu i od siebie.
     libav_build "$FFMPEG_VERSION" "$WORK" "$BUILD/work" "$LAVPREFIX" \
         --target-os=mingw32 --arch=x86_64 --cross-prefix="$TRIPLE-" --cc="$CC_W" --cxx="$CXX_W" \
         --pkg-config=pkg-config --extra-cflags="-march=$TARGET_CPU -O2" --extra-ldflags="-static" \
         || fail "budowanie bibliotek FFmpeg (DLL) nie powiodło się"
 fi
-log "1/6 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU, informacje o plikach przez libavformat)"
+log "1/5 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU, informacje o plikach przez libavformat)"
 # RUSTFLAGS zastępuje .cargo/config.toml — prefer-dynamic podajemy jawnie (biblioteka core jako DLL).
 # app/build.rs wkompilowuje ikonę i informacje o wersji przez windres.
 # ffmpeg-sys-next: nagłówki i biblioteki importu z FFMPEG_DIR; bindgen (clang) z nagłówkami MinGW.
@@ -177,24 +152,8 @@ OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
 STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
 [[ -n "$STD_DLL" ]] || fail "brak std-*.dll celu $RTARGET"
 
-# ------------------------------------------------------------------ 2. dovi_tool, hdr10plus_tool
-log "2/6 dovi_tool $DOVI_TOOL_REF + hdr10plus_tool $HDR10PLUS_TOOL_REF (.exe)"
-TOOLS="$CACHE/tools"
-STAMP="dovi=$DOVI_TOOL_REF hdr10plus=$HDR10PLUS_TOOL_REF cpu=$TARGET_CPU internal-font"
-if [[ "$FORCE" = 1 || "$(cat "$TOOLS/.stamp" 2>/dev/null)" != "$STAMP" ]]; then
-    export RUSTFLAGS="-C target-cpu=$TARGET_CPU"
-    export CARGO_TARGET_DIR="$WORK/tools-target"
-    for t in "dovi_tool:$DOVI_TOOL_REF" "hdr10plus_tool:$HDR10PLUS_TOOL_REF"; do
-        cargo install --locked --force --root "$TOOLS" --target "$RTARGET" \
-            --git "https://github.com/quietvoid/${t%%:*}" --tag "${t#*:}" \
-            --no-default-features --features internal-font "${t%%:*}"
-    done
-    unset RUSTFLAGS CARGO_TARGET_DIR
-    echo "$STAMP" > "$TOOLS/.stamp"
-fi
-
 # ------------------------------------------------------------------ 3. biblioteki statyczne
-log "3/6 dav1d $DAV1D_REF, libvpl $LIBVPL_REF, nv-codec-headers (statycznie, MinGW)"
+log "2/5 dav1d $DAV1D_REF, libvpl $LIBVPL_REF, nv-codec-headers (statycznie, MinGW)"
 CROSSFILE="$WORK/meson-cross.txt"
 cat > "$CROSSFILE" <<EOF
 [binaries]
@@ -338,7 +297,7 @@ if [[ "$FORCE" = 1 || "$(cat "$DEPS/.stamp" 2>/dev/null)" != "$DEPSTAMP" ]]; the
 fi
 
 # ------------------------------------------------------------------ 4. ffmpeg
-log "4/6 ffmpeg $FFMPEG_VERSION (statyczny .exe: NVENC/NVDEC/CUDA-LLVM, QSV + D3D11, dav1d, $TARGET_CPU)"
+log "3/5 ffmpeg $FFMPEG_VERSION (statyczny .exe: NVENC/NVDEC/CUDA-LLVM, QSV + D3D11, dav1d, $TARGET_CPU)"
 FFPREFIX="$CACHE/ffmpeg-$FFMPEG_VERSION"
 FFSTAMP="$DEPSTAMP cpu=$TARGET_CPU"
 if [[ "$FORCE" = 1 || ! -f "$FFPREFIX/bin/ffmpeg.exe" || "$(cat "$FFPREFIX/.stamp" 2>/dev/null)" != "$FFSTAMP" ]]; then
@@ -408,33 +367,38 @@ grep -q "^#define CONFIG_TONEMAP_OPENCL_FILTER 1" <<<"$FFCONF" \
     && echo "ffmpeg.exe: mapowanie tonów na GPU (tonemap_opencl)" \
     || echo "UWAGA: ffmpeg.exe bez tonemap_opencl — mapowanie tonów HDR → SDR na CPU (zscale)"
 
-# ------------------------------------------------------------------ 5. MKVToolNix (mkvmerge.exe)
-log "5/6 MKVToolNix $MKVTOOLNIX_VERSION (wersja przenośna, mkvmerge.exe)"
-MKV="$CACHE/mkvtoolnix-$MKVTOOLNIX_VERSION"
-if [[ ! -f "$MKV/mkvtoolnix/mkvmerge.exe" ]]; then
-    ARCHIVE="$WORK/mkvtoolnix-64-bit-$MKVTOOLNIX_VERSION.7z"
-    wget -nv -O "$ARCHIVE" \
-        "https://mkvtoolnix.download/windows/releases/$MKVTOOLNIX_VERSION/mkvtoolnix-64-bit-$MKVTOOLNIX_VERSION.7z" \
-        || fail "nie udało się pobrać MKVToolNix $MKVTOOLNIX_VERSION"
-    rm -rf "$MKV" && mkdir -p "$MKV"
-    "$SEVENZ" x -y -o"$MKV" "$ARCHIVE" >/dev/null
-    [[ -f "$MKV/mkvtoolnix/mkvmerge.exe" ]] || fail "w archiwum MKVToolNix brak mkvtoolnix/mkvmerge.exe"
-fi
-
-# MediaInfo CLI (oficjalna paczka MediaArea dla Windows x64).
-MI="$CACHE/mediainfo-$MEDIAINFO_VERSION"
-if ! compgen -G "$MI/*.exe" >/dev/null; then
-    ARCHIVE="$WORK/MediaInfo_CLI_${MEDIAINFO_VERSION}_Windows_x64.zip"
-    wget -nv -O "$ARCHIVE" \
-        "https://mediaarea.net/download/binary/mediainfo/$MEDIAINFO_VERSION/MediaInfo_CLI_${MEDIAINFO_VERSION}_Windows_x64.zip" \
-        || fail "nie udało się pobrać MediaInfo CLI $MEDIAINFO_VERSION"
-    rm -rf "$MI" && mkdir -p "$MI"
-    "$SEVENZ" x -y -o"$MI" "$ARCHIVE" >/dev/null
-    compgen -G "$MI/*.exe" >/dev/null || fail "w archiwum MediaInfo CLI brak pliku .exe"
+# ------------------------------------------------------------------ 5. MediaInfo.dll, mpv, terminal
+log "4/5 MediaInfo $MEDIAINFO_VERSION (MediaInfo.dll), mpv, terminal"
+# Biblioteka MediaInfo (oficjalna paczka DLL MediaArea dla Windows x64) — ładowana przez program.
+MI="$CACHE/mediainfo-dll-$MEDIAINFO_VERSION"
+if [[ ! -f "$MI/MediaInfo.dll" ]]; then
+    rm -rf "$MI" && mkdir -p "$MI/x"
+    got=""
+    for ext in zip 7z; do
+        ARCHIVE="$WORK/MediaInfo_DLL_${MEDIAINFO_VERSION}_Windows_x64_WithoutInstaller.$ext"
+        if wget -nv -O "$ARCHIVE" \
+            "https://mediaarea.net/download/binary/libmediainfo0/$MEDIAINFO_VERSION/MediaInfo_DLL_${MEDIAINFO_VERSION}_Windows_x64_WithoutInstaller.$ext"; then
+            got="$ARCHIVE"; break
+        fi
+        rm -f "$ARCHIVE"
+    done
+    [[ -n "$got" ]] || fail "nie udało się pobrać MediaInfo DLL $MEDIAINFO_VERSION"
+    "$SEVENZ" x -y -o"$MI/x" "$got" >/dev/null
+    dll="$(find "$MI/x" -iname MediaInfo.dll -print -quit)"
+    [[ -n "$dll" ]] || fail "w archiwum MediaInfo DLL brak MediaInfo.dll"
+    # Sama biblioteka (+ DLL leżące obok niej, np. libcurl.dll — tylko dla adresów URL); bez przykładów i SDK.
+    for f in "$(dirname "$dll")"/*.dll "$(dirname "$dll")"/*.DLL; do
+        if [[ -f "$f" ]]; then cp "$f" "$MI/"; fi
+    done
+    for f in "$MI"/*.dll "$MI"/*.DLL; do
+        if [[ -f "$f" && "${f,,}" == *"/mediainfo.dll" && "$f" != "$MI/MediaInfo.dll" ]]; then mv -f "$f" "$MI/MediaInfo.dll"; fi
+    done
+    rm -rf "$MI/x"
+    [[ -f "$MI/MediaInfo.dll" ]] || fail "brak $MI/MediaInfo.dll"
 fi
 
 # mpv (odtwarzacz pod F3). Kompilacja skrośna mpv z zależnościami (libplacebo, libass, ANGLE/Vulkan…)
-# jest bardzo ciężka, więc — jak MKVToolNix — bierzemy gotowy, statycznie zlinkowany build
+# jest bardzo ciężka, więc bierzemy gotowy, statycznie zlinkowany build
 # shinchiro/mpv-winbuild-cmake w wariancie x86-64-v3 (Linux: mpv kompilowany ze źródeł).
 MPVW="$CACHE/mpv-win-$MPV_WIN_TAG"
 if [[ ! -f "$MPVW/mpv.exe" ]]; then
@@ -483,17 +447,13 @@ if [[ "$FORCE" = 1 || ! -f "$TERMW/videopipeline-term.exe" ]]; then
 fi
 
 # ------------------------------------------------------------------ 6. pakiet .zip
-log "6/6 składanie $PKGNAME.zip"
+log "5/5 składanie $PKGNAME.zip"
 rm -rf "$PKG" && mkdir -p "$PKG"
 cp "$OUT/videopipeline.exe" "$OUT/videopipeline_core.dll" "$STD_DLL" "$PKG/"
 cp "$LAVPREFIX"/bin/{avformat,avcodec,avutil}-*.dll "$PKG/"
 cp "$FFPREFIX/bin/ffmpeg.exe" "$PKG/"   # ffprobe.exe niepotrzebny — odczyt plików przez avformat-*.dll
-cp "$TOOLS/bin/dovi_tool.exe" "$TOOLS/bin/hdr10plus_tool.exe" "$PKG/"
-cp "$MKV/mkvtoolnix/mkvmerge.exe" "$PKG/"
-# MediaInfo.exe (+ jego biblioteki DLL, jeśli są w paczce CLI); Windows nie rozróżnia wielkości liter,
-# więc program znajduje go jako "mediainfo".
-cp "$MI"/*.exe "$PKG/"
-for d in "$MI"/*.dll "$MI"/*.DLL; do
+# MediaInfo.dll (+ DLL z jej paczki) — program ładuje ją z własnego katalogu.
+for d in "$MI"/*.dll; do
     if [[ -f "$d" ]]; then cp "$d" "$PKG/"; fi
 done
 # Terminal z ikoną VideoPipeline (jeśli zbudowany) i jego konfiguracja.
@@ -506,9 +466,7 @@ cp "$MPVW/mpv.exe" "$PKG/"
 for d in "$MPVW"/*.dll; do
     if [[ -f "$d" ]]; then cp "$d" "$PKG/"; fi
 done
-# Dane mkvmerge (baza typów plików itp.), jeśli są w wersji przenośnej.
-[[ -d "$MKV/mkvtoolnix/data" ]] && cp -r "$MKV/mkvtoolnix/data" "$PKG/"
-"$TRIPLE-strip" "$PKG/ffmpeg.exe" "$PKG"/av{format,codec,util}-*.dll "$PKG/dovi_tool.exe" "$PKG/hdr10plus_tool.exe" 2>/dev/null || true
+"$TRIPLE-strip" "$PKG/ffmpeg.exe" "$PKG"/av{format,codec,util}-*.dll 2>/dev/null || true
 
 # Ikona w zasobach videopipeline.exe (sekcja .rsrc z app/build.rs).
 "$TRIPLE-objdump" -h "$PKG/videopipeline.exe" | grep '\.rsrc' >/dev/null || fail "videopipeline.exe bez zasobów (ikony) — sprawdź windres"

@@ -1,6 +1,7 @@
 use crate::{
     config::*,
-    model::{hms, read_progress, Panel},
+    extract::{self, Extractor},
+    model::{hms, Panel},
     probe::{self, ColorProfile},
     proc,
 };
@@ -10,7 +11,6 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -55,14 +55,127 @@ impl Analysis {
     }
 }
 
-/// Jeden odczyt pliku dla wszystkich narzędzi: ffmpeg (kopia → Annex B HEVC) na stdout, a wątek
-/// rozsyła strumień do stdin każdego narzędzia (dovi_tool, hdr10plus_tool) — przy DV i HDR10+ plik
-/// jest czytany raz, nie dwa razy. Postęp z `ffmpeg -progress` (pozycja w filmie względem długości)
-/// trafia do okna analizy: procent od `from` do `to`, czas, prędkość i szacowany koniec.
+/// Pasek postępu odczytu strumienia w oknie analizy: procent od `from` do `to`, czas, prędkość, koniec.
+struct ReadProgress<'a> {
+    panel: &'a Panel,
+    name: &'a str,
+    step: &'a str,
+    duration: Option<f64>,
+    from: f64,
+    to: f64,
+    started: std::time::Instant,
+    last: std::time::Instant,
+}
+
+impl ReadProgress<'_> {
+    /// `cur`: pozycja w filmie (s), `speed`: krotność czasu rzeczywistego (gdy znana).
+    fn show(&mut self, cur: f64, speed: Option<f64>, force: bool) {
+        if !force && self.last.elapsed() < std::time::Duration::from_millis(500) {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        let speed = speed.or_else(|| {
+            let e = self.started.elapsed().as_secs_f64();
+            (e > 1.0 && cur > 0.0).then(|| cur / e)
+        });
+        let sp = speed.map(|x| format!(" · {x:.1}x")).unwrap_or_default();
+        let note = match self.duration.filter(|d| *d > 0.0) {
+            Some(d) => {
+                let frac = (cur / d).clamp(0.0, 1.0);
+                let eta = match speed.filter(|x| *x > 0.0) {
+                    Some(x) => format!(" · zostało ~{}", hms((d - cur).max(0.0) / x)),
+                    None => String::new(),
+                };
+                format!("Odczyt strumienia wideo: {:.0}% ({} / {}){sp}{eta}", frac * 100.0, hms(cur), hms(d))
+            }
+            None => format!("Odczyt strumienia wideo: {} (czas trwania nieznany)", hms(cur)),
+        };
+        let (from, to) = (self.from, self.to);
+        let pct = self
+            .duration
+            .filter(|d| *d > 0.0)
+            .map(|d| from + (to - from) * (cur / d).clamp(0.0, 1.0))
+            .unwrap_or(from + (to - from) * (1.0 - (-self.started.elapsed().as_secs_f64() / 600.0).exp()));
+        self.panel.draw_analysis(self.name, pct, self.step, &note);
+    }
+}
+
+/// Odczyt HEVC przez biblioteki FFmpeg: pakiety prosto z kontenera, bez osobnego procesu.
+#[cfg(feature = "libav")]
+fn read_hevc(input: &Path, ex: &mut Extractor, prog: &mut ReadProgress) -> Result<()> {
+    crate::log::file_line(&format!("[libav] odczyt HEVC do analizy DV/HDR10+: {}", input.display()));
+    crate::libav::hevc_nals(
+        input,
+        |n| ex.nal(n),
+        |t| {
+            prog.show(t, None, false);
+            !proc::cancelled()
+        },
+    )
+}
+
+/// Odczyt HEVC przez ffmpeg (kopia → Annex B na stdout) — gdy program zbudowano bez bibliotek FFmpeg.
+#[cfg(not(feature = "libav"))]
+fn read_hevc(input: &Path, ex: &mut Extractor, prog: &mut ReadProgress) -> Result<()> {
+    use crate::model::read_progress;
+    use anyhow::Context;
+    use std::process::Stdio;
+    let pf = std::env::temp_dir().join(format!(
+        "videopipeline-{}-{}.ffprogress",
+        std::process::id(),
+        prog.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>()
+    ));
+    let _ = fs::remove_file(&pf);
+    let full = crate::log::full();
+    let cap = crate::log::Capture::new(&format!("ffmpeg (odczyt HEVC do analizy) — {}", prog.name));
+    let mut cmd = crate::proc::command("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", if full { "info" } else { "quiet" }, "-nostats", "-progress"])
+        .arg(&pf)
+        .arg("-i")
+        .arg(input)
+        .args(["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(crate::log::stdio(&cap));
+    if full {
+        crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
+    }
+    let mut ff = cmd.spawn().context("nie można uruchomić ffmpeg")?;
+    proc::register(ff.id());
+    let mut out = ff.stdout.take().context("brak stdout ffmpeg")?;
+    let mut own = std::mem::replace(ex, Extractor::new(false, false));
+    let reader = std::thread::spawn(move || {
+        let r = crate::inject::split_annexb(&mut out, |n| own.nal(&n));
+        (own, r)
+    });
+    while !reader.is_finished() {
+        if proc::cancelled() {
+            let _ = ff.kill();
+        }
+        let pr = read_progress(&pf);
+        let speed = pr.speed.as_deref().and_then(|v| v.trim_end_matches('x').trim().parse::<f64>().ok());
+        prog.show(pr.out_us.map(|u| u / 1e6).unwrap_or(0.0), speed, false);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (own, r) = reader.join().map_err(|_| anyhow::anyhow!("wątek odczytu HEVC przerwany"))?;
+    *ex = own;
+    let _ = ff.kill();
+    let _ = ff.wait();
+    proc::unregister(ff.id());
+    if let Some(c) = cap {
+        c.finish();
+    }
+    let _ = fs::remove_file(&pf);
+    r
+}
+
+/// Dolby Vision RPU i HDR10+ z jednego odczytu strumienia HEVC źródła — do plików `rpu_out`
+/// (jak dovi_tool extract-rpu) i `hdr10plus_out` (JSON jak hdr10plus_tool extract).
 #[allow(clippy::too_many_arguments)]
-fn extract_hevc(
+fn extract_hdr(
     input: &Path,
-    tools: &[(&str, Vec<String>)],
+    rpu_out: Option<&Path>,
+    hdr10plus_out: Option<&Path>,
     duration: Option<f64>,
     panel: &Panel,
     name: &str,
@@ -70,132 +183,31 @@ fn extract_hevc(
     from: f64,
     to: f64,
 ) {
-    use std::io::{Read, Write};
-    let pf = std::env::temp_dir().join(format!(
-        "videopipeline-{}-{}.ffprogress",
-        std::process::id(),
-        name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>()
-    ));
-    let _ = fs::remove_file(&pf);
-    let full = crate::log::full();
-    let mut caps: Vec<crate::log::Capture> = vec![];
-    let ff_cap = crate::log::Capture::new(&format!("ffmpeg (odczyt HEVC do analizy) — {name}"));
-    let mut ff_cmd = crate::proc::command("ffmpeg");
-    ff_cmd
-        .args(["-hide_banner", "-loglevel", if full { "info" } else { "quiet" }, "-nostats", "-progress"])
-        .arg(&pf)
-        .arg("-i")
-        .arg(input)
-        .args(["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(crate::log::stdio(&ff_cap));
-    if full {
-        crate::log::file_line(&format!("$ {}", crate::log::cmdline(&ff_cmd)));
-    }
-    let Ok(mut ff) = ff_cmd.spawn() else {
+    let now = std::time::Instant::now();
+    let mut prog = ReadProgress { panel, name, step, duration, from, to, started: now, last: now - std::time::Duration::from_secs(1) };
+    let mut ex = Extractor::new(rpu_out.is_some(), hdr10plus_out.is_some());
+    let r = read_hevc(input, &mut ex, &mut prog);
+    if proc::cancelled() {
         return;
-    };
-    caps.extend(ff_cap);
-    proc::register(ff.id());
-    let mut children = vec![];
-    let mut sinks = vec![];
-    for (tool, args) in tools {
-        let cap = crate::log::Capture::new(&format!("{tool} — {name}"));
-        let mut cmd = crate::proc::command(tool);
-        cmd.args(args).stdin(Stdio::piped()).stdout(crate::log::stdio(&cap)).stderr(crate::log::stdio(&cap));
-        if full {
-            crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
-        }
-        caps.extend(cap);
-        match cmd.spawn() {
-            Ok(mut c) => {
-                proc::register(c.id());
-                sinks.push(c.stdin.take());
-                children.push(c);
-            }
-            Err(e) => plog!("    BŁĄD: nie można uruchomić {tool}: {e}"),
-        }
     }
-    // Rozdzielacz: narzędzie, które skończy wcześniej (np. hdr10plus_tool bez metadanych), odpada,
-    // reszta czyta dalej. Zamknięcie stdin = koniec danych dla narzędzia.
-    let tee = ff.stdout.take().map(|mut src| {
-        std::thread::spawn(move || {
-            let mut buf = vec![0u8; 1 << 20];
-            loop {
-                let n = match src.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                for s in sinks.iter_mut() {
-                    if let Some(w) = s {
-                        if w.write_all(&buf[..n]).is_err() {
-                            *s = None;
-                        }
-                    }
-                }
-                if sinks.iter().all(Option::is_none) {
-                    break;
-                }
-            }
-        })
-    });
-
-    let started = std::time::Instant::now();
-    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    loop {
-        if proc::cancelled() {
-            let _ = ff.kill();
-            for c in children.iter_mut() {
-                let _ = c.kill();
-            }
+    if let Err(e) = &r {
+        // Odczyt urwany (np. uszkodzony koniec pliku) — to, co zebrane, nadal jest używane.
+        plog!("    UWAGA: odczyt strumienia HEVC przerwany: {e:#}");
+    }
+    let c = ex.finish();
+    match extract::save(&c, rpu_out, hdr10plus_out) {
+        Ok((rpu, h10)) => {
+            plog!("    Odczyt HEVC: {} klatek · RPU Dolby Vision: {rpu} · HDR10+: {h10}", c.frames);
+            crate::log::file_line(&format!(
+                "[analiza] {name}: klatek {}, RPU {rpu} (zebrane {}), HDR10+ {h10} (zebrane {}), {:.1} s",
+                c.frames,
+                c.rpus.len(),
+                c.hdr10plus.len(),
+                now.elapsed().as_secs_f64()
+            ));
         }
-        let tools_done = children.iter_mut().all(|c| matches!(c.try_wait(), Ok(Some(_))));
-        if tools_done && tee.as_ref().is_none_or(|t| t.is_finished()) {
-            break;
-        }
-        if last.elapsed() >= std::time::Duration::from_millis(500) {
-            last = std::time::Instant::now();
-            let pr = read_progress(&pf);
-            let cur = pr.out_us.map(|u| u / 1e6).unwrap_or(0.0);
-            let note = match duration.filter(|d| *d > 0.0) {
-                Some(d) => {
-                    let frac = (cur / d).clamp(0.0, 1.0);
-                    let speed = pr.speed.clone().filter(|v| v.ends_with('x')).unwrap_or_default();
-                    let sx = speed.trim_end_matches('x').trim().parse::<f64>().unwrap_or(0.0);
-                    let eta = if sx > 0.0 { format!(" · zostało ~{}", hms((d - cur).max(0.0) / sx)) } else { String::new() };
-                    format!(
-                        "Odczyt strumienia wideo: {:.0}% ({} / {}){}{eta}",
-                        frac * 100.0,
-                        hms(cur),
-                        hms(d),
-                        if speed.is_empty() { String::new() } else { format!(" · {speed}") }
-                    )
-                }
-                None => format!("Odczyt strumienia wideo: {} (czas trwania nieznany)", hms(cur)),
-            };
-            let pct = duration
-                .filter(|d| *d > 0.0)
-                .map(|d| from + (to - from) * (cur / d).clamp(0.0, 1.0))
-                .unwrap_or(from + (to - from) * (1.0 - (-started.elapsed().as_secs_f64() / 600.0).exp()));
-            panel.draw_analysis(name, pct, step, &note);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        Err(e) => plog!("    BŁĄD zapisu metadanych DV/HDR10+: {e:#}"),
     }
-    let _ = ff.kill();
-    let _ = ff.wait();
-    proc::unregister(ff.id());
-    for mut c in children {
-        let _ = c.wait();
-        proc::unregister(c.id());
-    }
-    if let Some(t) = tee {
-        let _ = t.join();
-    }
-    for c in caps {
-        c.finish();
-    }
-    let _ = fs::remove_file(&pf);
 }
 
 fn last_crop(stderr: &str) -> Option<String> {
@@ -322,29 +334,36 @@ pub fn analyze(opts: &Opts, input: &Path, panel: &mut Panel) -> Result<Analysis>
     } else if opts.codec == Codec::Av1 {
         panel.draw_analysis(&filename, 60.0, "AV1 / HDR", "DV RPU i HDR10+ pominięte — to ścieżka HEVC");
     } else {
-        // Dolby Vision i HDR10+ z jednego odczytu pliku (patrz extract_hevc).
-        let mut tools: Vec<(&str, Vec<String>)> = vec![];
+        // Dolby Vision i HDR10+ z jednego odczytu pliku (patrz extract_hdr).
         let mut what: Vec<&str> = vec![];
         if opts.no_dv {
             plog!("    Dolby Vision: pominięte (opcja -pdv)");
         } else {
             let _ = fs::remove_file(&p.temp_rpu);
-            tools.push(("dovi_tool", vec!["extract-rpu".into(), "-".into(), "-o".into(), p.temp_rpu.to_string_lossy().into()]));
             what.push("DOLBY VISION RPU");
         }
         if opts.no_hdr10plus {
             plog!("    HDR10+: pominięte (opcja -ph)");
         } else {
             let _ = fs::remove_file(&p.temp_hdr10plus);
-            tools.push(("hdr10plus_tool", vec!["extract".into(), "-o".into(), p.temp_hdr10plus.to_string_lossy().into(), "-".into()]));
             what.push("HDR10+");
         }
-        if tools.is_empty() {
+        if what.is_empty() {
             panel.draw_analysis(&filename, 60.0, "DV / HDR10+", "Pominięte (opcje: bez Dolby Vision i HDR10+)");
         } else {
             let step = what.join(" + ");
-            panel.draw_analysis(&filename, 22.0, &step, "Uruchamiam odczyt strumienia wideo…");
-            extract_hevc(input, &tools, media.duration, panel, &filename, &step, 22.0, 60.0);
+            panel.draw_analysis(&filename, 22.0, &step, "Odczyt strumienia wideo…");
+            extract_hdr(
+                input,
+                (!opts.no_dv).then_some(p.temp_rpu.as_path()),
+                (!opts.no_hdr10plus).then_some(p.temp_hdr10plus.as_path()),
+                media.duration,
+                panel,
+                &filename,
+                &step,
+                22.0,
+                60.0,
+            );
         }
         if !opts.no_dv {
             if fs::metadata(&p.temp_rpu).map(|m| m.len() > 0).unwrap_or(false) {

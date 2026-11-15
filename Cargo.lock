@@ -1261,6 +1261,7 @@ dependencies = [
  "dolby_vision",
  "ffmpeg-next",
  "hdr10plus",
+ "libloading",
  "serde",
  "serde_json",
  "sha2",

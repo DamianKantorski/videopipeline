@@ -4,7 +4,7 @@
 #   dist/videopipeline_<wersja>_amd64.deb            (Debian/Ubuntu)
 #   dist/videopipeline-<wersja>-1-x86_64.pkg.tar.zst (Arch/CachyOS)
 #   dist/VideoPipeline-<wersja>-windows-x86_64_v3.zip (Windows x64, kroskompilacja MinGW)
-# Cache (ffmpeg, dovi_tool, hdr10plus_tool, crate'y) zostaje w ./build, więc kolejne budowania są szybkie.
+# Cache (ffmpeg, biblioteki FFmpeg, mpv, crate'y) zostaje w ./build, więc kolejne budowania są szybkie.
 #
 # Użycie:  ./build-local.sh            # Linux i Windows
 #          ./build-local.sh linux      # tylko AppImage, deb i pakiet Arch

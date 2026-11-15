@@ -2,7 +2,7 @@
 //! Wynik w tej samej postaci, co z ffprobe (nazwy kodeków, formatów pikseli i kolorów jak w FFmpeg),
 //! więc reszta programu nie rozróżnia źródła danych.
 use crate::probe::{Info, StreamInfo};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ffmpeg_next as ff;
 use ff::ffi;
 use std::{
@@ -102,6 +102,88 @@ pub fn decodable(codec: &str) -> bool {
         let d = ffi::avcodec_descriptor_get_by_name(name.as_ptr());
         !d.is_null() && !ffi::avcodec_find_decoder((*d).id).is_null()
     }
+}
+
+/// Strumień HEVC (pierwsze wideo) pakiet po pakiecie, jako kolejne NAL — bez pośrednika ffmpeg.
+/// Najpierw zestawy parametrów z nagłówka kontenera (hvcC), potem dane pakietów: w MKV/MP4 z długościami
+/// NAL, w MPEG-TS / surowym HEVC z kodami startowymi. `pos`: pozycja w sekundach po każdym pakiecie;
+/// zwrot `false` przerywa odczyt.
+pub fn hevc_nals(
+    path: &Path,
+    mut nal: impl FnMut(&[u8]) -> Result<()>,
+    mut pos: impl FnMut(f64) -> bool,
+) -> Result<()> {
+    init();
+    let mut ictx = ff::format::input(path).map_err(|e| anyhow!("libavformat: {e}"))?;
+    let st = ictx.streams().find(|s| s.parameters().medium() == ff::media::Type::Video).context("brak strumienia wideo")?;
+    let idx = st.index();
+    let tb = st.time_base();
+    let tb = if tb.1 != 0 { tb.0 as f64 / tb.1 as f64 } else { 0.0 };
+    let start = st.start_time();
+    let par = st.parameters();
+    if par.id() != ff::codec::Id::HEVC {
+        bail!("wideo nie jest HEVC");
+    }
+    let extradata: Vec<u8> = unsafe {
+        let p = par.as_ptr();
+        if (*p).extradata.is_null() || (*p).extradata_size <= 0 {
+            vec![]
+        } else {
+            std::slice::from_raw_parts((*p).extradata, (*p).extradata_size as usize).to_vec()
+        }
+    };
+    let mut len_size: Option<usize> = None;
+    if extradata.len() >= 23 && extradata[0] == 1 {
+        // HEVCDecoderConfigurationRecord: rozmiar pola długości NAL i tablice VPS/SPS/PPS/SEI
+        len_size = Some((extradata[21] & 3) as usize + 1);
+        let mut i = 23;
+        for _ in 0..extradata[22] {
+            let Some(h) = extradata.get(i..i + 3) else { break };
+            let count = u16::from_be_bytes([h[1], h[2]]) as usize;
+            i += 3;
+            for _ in 0..count {
+                let Some(l) = extradata.get(i..i + 2) else { break };
+                let l = u16::from_be_bytes([l[0], l[1]]) as usize;
+                if let Some(n) = extradata.get(i + 2..i + 2 + l) {
+                    nal(n)?;
+                }
+                i += 2 + l;
+            }
+        }
+    } else {
+        for n in crate::inject::annexb_nals(&extradata) {
+            nal(n)?;
+        }
+    }
+    for (s, packet) in ictx.packets() {
+        if s.index() != idx {
+            continue;
+        }
+        let Some(data) = packet.data() else { continue };
+        match len_size {
+            Some(ls) => {
+                let mut i = 0;
+                while i + ls <= data.len() {
+                    let l = data[i..i + ls].iter().fold(0usize, |a, b| (a << 8) | *b as usize);
+                    i += ls;
+                    let Some(n) = data.get(i..i + l) else { break };
+                    nal(n)?;
+                    i += l;
+                }
+            }
+            None => {
+                for n in crate::inject::annexb_nals(data) {
+                    nal(n)?;
+                }
+            }
+        }
+        if let Some(t) = packet.pts().or(packet.dts()) {
+            if !pos(((t - start.max(0).min(t)) as f64 * tb).max(0.0)) {
+                bail!("przerwano");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Punkt wejścia AppImage: sprawdza CPU (x86-64-v3), ustawia PATH na dołączone narzędzia
-# (ffmpeg, ffprobe, mkvmerge, dovi_tool, hdr10plus_tool) i uruchamia videopipeline.
+# (ffmpeg, mpv, terminal) i uruchamia videopipeline.
 HERE="$(dirname "$(readlink -f "$0")")"
 export APPDIR="${APPDIR:-$HERE}"
 
@@ -59,9 +59,4 @@ if [ -d "$HF" ]; then
         fi
     fi
 fi
-# libmagic (mkvmerge) bez systemowej bazy typów plików na hoście.
-if [ -f "$APPDIR/usr/share/misc/magic.mgc" ]; then
-    export MAGIC="$APPDIR/usr/share/misc/magic.mgc"
-fi
-
 exec "$APPDIR/usr/bin/videopipeline" "$@"

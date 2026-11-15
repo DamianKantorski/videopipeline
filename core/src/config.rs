@@ -246,9 +246,6 @@ pub struct Opts {
     pub no_dv: bool,
     /// pomiń ekstrakcję HDR10+ (i jego wstrzykiwanie)
     pub no_hdr10plus: bool,
-    /// Stara ścieżka DV/HDR10+: plik tymczasowy wideo, dovi_tool / hdr10plus_tool, mkvmerge.
-    /// Domyślnie metadane są wstrzykiwane w locie (bez plików pośrednich).
-    pub legacy_inject: bool,
     /// Zmniejszenie obrazu do 1920×1080 (z zachowaniem proporcji; mniejsze źródła bez zmian).
     pub scale_1080: bool,
     /// Pełny log przebiegu do pliku w katalogu wyjściowym (wywołania i całe wyjście każdego narzędzia).
@@ -321,22 +318,9 @@ pub struct Paths {
     pub container: Container,
     /// Gotowy plik wynikowy (.mkv albo .mp4, zależnie od pliku wejściowego).
     pub output: PathBuf,
-    pub temp_video: PathBuf,
-    pub temp_pol_audio: PathBuf,
-    pub temp_eng_audio: PathBuf,
     pub temp_rpu: PathBuf,
     pub temp_hdr10plus: PathBuf,
-    pub step1: PathBuf,
-    pub step2: PathBuf,
     pub analysis: PathBuf,
-}
-
-impl Paths {
-    /// Zakodowane wideo w którejkolwiek postaci (po NVENC/QSV albo już z HDR10+ / Dolby Vision) —
-    /// pliki pośrednie są usuwane po każdym udanym kroku, więc może zostać tylko ostatni.
-    pub fn has_encoded_video(&self) -> bool {
-        self.temp_video.exists() || self.step1.exists() || self.step2.exists()
-    }
 }
 
 impl Opts {
@@ -377,11 +361,6 @@ impl Opts {
         self.codec != Codec::Hevc || !((has_dovi && !self.no_dv) || (has_hdr10plus && !self.no_hdr10plus))
     }
 
-    /// Kodowanie wprost do pliku wynikowego: bez DV/HDR10+ albo z metadanymi wstrzykiwanymi w locie.
-    pub fn no_temp_video(&self, has_dovi: bool, has_hdr10plus: bool) -> bool {
-        self.direct_encode(has_dovi, has_hdr10plus) || !self.legacy_inject
-    }
-
     pub fn paths_for(&self, input: &Path) -> Paths {
         let stem = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         self.paths(&stem, self.container.resolve(input))
@@ -401,30 +380,16 @@ impl Opts {
         if self.extra {
             suffix.push_str("_da");
         }
-        let (temp_video, analysis) = match self.codec {
-            Codec::Hevc => (
-                d.join(format!("{stem}_encoded{cqt}.hevc")),
-                d.join(format!("{stem}.analysis.json")),
-            ),
-            Codec::Av1 => (
-                d.join(format!("{stem}_encoded_{AV1_TAG}{cqt}.mkv")),
-                d.join(format!("{stem}.{AV1_TAG}.analysis.json")),
-            ),
-            Codec::Avc => (
-                d.join(format!("{stem}_encoded_avc{cqt}.mkv")),
-                d.join(format!("{stem}.avc.analysis.json")),
-            ),
+        let analysis = match self.codec {
+            Codec::Hevc => d.join(format!("{stem}.analysis.json")),
+            Codec::Av1 => d.join(format!("{stem}.{AV1_TAG}.analysis.json")),
+            Codec::Avc => d.join(format!("{stem}.avc.analysis.json")),
         };
         Paths {
             container,
             output: d.join(format!("{stem}{suffix}.{}", container.ext())),
-            temp_video,
-            temp_pol_audio: d.join(format!("{stem}_pol_192.eac3")),
-            temp_eng_audio: d.join(format!("{stem}_eng.eac3")),
             temp_rpu: d.join(format!("{stem}_rpu.bin")),
             temp_hdr10plus: d.join(format!("{stem}_hdr10plus.json")),
-            step1: d.join(format!("{stem}_step1{cqt}.hevc")),
-            step2: d.join(format!("{stem}_step2{cqt}.hevc")),
             analysis,
         }
     }

@@ -24,10 +24,10 @@ struct Running {
     child: Child,
     live: Option<Live>,
     name: String,
-    /// Plik zapisywany przez ffmpeg: tymczasowe wideo albo <wynik>.part (tryb bezpośredni).
+    /// Plik zapisywany przez ffmpeg: <wynik>.part.
     output: PathBuf,
-    /// Tryb bezpośredni: docelowa nazwa pliku wynikowego (po sukcesie .part → wynik).
-    final_out: Option<PathBuf>,
+    /// Docelowa nazwa pliku wynikowego (po sukcesie .part → wynik).
+    final_out: PathBuf,
     log: PathBuf,
     pf: PathBuf,
 }
@@ -62,16 +62,11 @@ fn scope_v(args: Vec<String>) -> Vec<String> {
     out
 }
 
-/// Tryb z plikiem tymczasowym: samo wideo do surowego .hevc / .mkv (AV1), dalej DV/HDR10+ i mux.
-fn temp_out(path: &Path) -> OutSpec {
-    OutSpec { streams: sv(&["-an", "-sn", "-map", "0:v:0"]), tail: vec![path.to_string_lossy().into()] }
-}
-
 /// Tryb bezpośredni: wideo + audio (kopia lub E-AC-3 w locie) + napisy od razu w pliku wynikowym.
 fn direct_out(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> OutSpec {
     let info = probe::stream_codecs(&a.input_file);
     let mut streams = sv(&["-map", "0:v:0"]);
-    let (src, _) = crate::mux::source_streams(opts, a, p.container, 0, true, &info);
+    let (src, _) = crate::mux::source_streams(opts, a, p.container, 0, &info);
     streams.extend(src);
     let mut tail = crate::mux::meta_args(opts, a, 0);
     tail.extend(sv(&["-map_chapters", "0"]));
@@ -102,7 +97,7 @@ fn live_mux_args(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> Vec<Strin
     let mut v = sv(&["-hide_banner", "-nostats", "-loglevel", level, "-f", "matroska", "-i", "pipe:0", "-i"]);
     v.push(a.input_file.to_string_lossy().into());
     v.extend(sv(&["-map", "0:v:0", "-c:v", "copy"]));
-    let (src, _) = crate::mux::source_streams(opts, a, p.container, 1, true, &info);
+    let (src, _) = crate::mux::source_streams(opts, a, p.container, 1, &info);
     v.extend(src);
     v.extend(crate::mux::meta_args(opts, a, 1));
     v.extend(sv(&["-map_chapters", "1"]));
@@ -611,23 +606,6 @@ fn result_check(opts: &Opts, out: &Path, pf: &Path) -> Result<(), String> {
     }
 }
 
-/// HEVC: stara semantyka V9 (istnienie pliku). AV1: kodek + długość ≈ źródło.
-fn existing_temp_valid(opts: &Opts, out: &Path, input: &Path) -> bool {
-    if !fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false) {
-        return false;
-    }
-    if opts.codec != Codec::Av1 {
-        return true;
-    }
-    if probe::video_codec(out).as_deref() != Some("av1") {
-        return false;
-    }
-    match (probe::container_duration(input), probe::container_duration(out)) {
-        (Some(s), Some(o)) => o + (s * 0.005).max(2.0) >= s,
-        _ => true,
-    }
-}
-
 fn start(
     opts: &Opts,
     rt: &Runtime,
@@ -652,8 +630,8 @@ fn start(
         ));
     }
     let direct = opts.direct_encode(a.has_dovi, a.has_hdr10plus);
-    // DV/HDR10+ w locie (domyślnie): bez pliku tymczasowego wideo i bez dovi_tool / mkvmerge.
-    let live = !direct && !opts.legacy_inject;
+    // DV/HDR10+ w locie: RPU i SEI HDR10+ doklejane do klatek między koderem a składaniem pliku.
+    let live = !direct;
     let fps = if live {
         let fps = probe::video_fps(&a.input_file).as_deref().and_then(parse_fps);
         if fps.is_none() {
@@ -667,11 +645,9 @@ fn start(
     let (write_to, out) = if direct {
         let _ = fs::remove_file(&part);
         (part.clone(), direct_out(opts, a, &p, &part))
-    } else if live {
+    } else {
         let _ = fs::remove_file(&part);
         (part.clone(), live_encoder_out())
-    } else {
-        (p.temp_video.clone(), temp_out(&p.temp_video))
     };
     let (args, note, decoder) = if opts.engine == Engine::Nvenc {
         let (args, note) = build_args_nvenc(opts, rt, a, &out, &pf);
@@ -683,10 +659,8 @@ fn start(
     let eng = opts.engine.label();
     let mode = if direct {
         format!(" — od razu do {}", p.container.ext().to_uppercase())
-    } else if live {
-        format!(" — DV/HDR10+ w locie do {}", p.container.ext().to_uppercase())
     } else {
-        String::new()
+        format!(" — DV/HDR10+ w locie do {}", p.container.ext().to_uppercase())
     };
     panel.set(&a.filename, State::Nvenc, format!("{eng} {slot}/2 — {note} — dekoder: {decoder}{mode}"));
 
@@ -718,7 +692,7 @@ fn start(
         live,
         name: a.filename.clone(),
         output: write_to,
-        final_out: (direct || fps.is_some()).then(|| p.output.clone()),
+        final_out: p.output.clone(),
         log,
         pf,
     })
@@ -820,20 +794,16 @@ fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
     }
     let check = if status.success() && live_ok { result_check(opts, &r.output, &r.pf) } else { Err(String::new()) };
     if check.is_ok() {
-        if let Some(fin) = &r.final_out {
-            // Tryb bezpośredni: gotowy plik wynikowy dopiero po pełnym zapisie (.part → nazwa docelowa).
-            if let Err(e) = fs::rename(&r.output, fin) {
-                panel.set(&r.name, State::Error, format!("nie można zapisać {}: {e}", fin.display()));
-                plog!(" -> ffmpeg [{}]: BŁĄD zapisu pliku wynikowego: {e}", r.name);
-                return;
-            }
-            let note = if live { "Zakodowano z DV/HDR10+ w locie do pliku wynikowego" } else { "Zakodowano od razu do pliku wynikowego" };
-            panel.set(&r.name, State::NvencDone, note);
-            plog!(" -> ffmpeg [{}]: ZAKOŃCZONY + PLIK OK (bez plików tymczasowych)", r.name);
-        } else {
-            panel.set(&r.name, State::NvencDone, format!("{} zakończony i zweryfikowany", opts.engine.label()));
-            plog!(" -> ffmpeg [{}]: ZAKOŃCZONY + PLIK OK", r.name);
+        // Gotowy plik wynikowy dopiero po pełnym zapisie (.part → nazwa docelowa).
+        let fin = &r.final_out;
+        if let Err(e) = fs::rename(&r.output, fin) {
+            panel.set(&r.name, State::Error, format!("nie można zapisać {}: {e}", fin.display()));
+            plog!(" -> ffmpeg [{}]: BŁĄD zapisu pliku wynikowego: {e}", r.name);
+            return;
         }
+        let note = if live { "Zakodowano z DV/HDR10+ w locie do pliku wynikowego" } else { "Zakodowano od razu do pliku wynikowego" };
+        panel.set(&r.name, State::NvencDone, note);
+        plog!(" -> ffmpeg [{}]: ZAKOŃCZONY + PLIK OK", r.name);
     } else {
         let why = check.err().filter(|w| !w.is_empty());
         panel.set(
@@ -919,25 +889,6 @@ pub fn run_stage(opts: &Opts, rt: &Runtime, files: &[Analysis], panel: &Panel) {
             panel.set(&a.filename, State::Done, "Plik wynikowy już istnieje");
             continue;
         }
-        // Wznowienie po częściowym etapie 3: wideo jest już po wstrzyknięciu HDR10+ / Dolby Vision
-        // (plik po NVENC/QSV został usunięty jako zbędny).
-        if (p.step1.exists() || p.step2.exists()) && !opts.direct_encode(a.has_dovi, a.has_hdr10plus) {
-            panel.set(&a.filename, State::NvencDone, "Kodowanie pominięte — wideo z metadanymi HDR już gotowe");
-            continue;
-        }
-        if p.temp_video.exists() && !opts.direct_encode(a.has_dovi, a.has_hdr10plus) {
-            if existing_temp_valid(opts, &p.temp_video, &a.input_file) {
-                panel.set(
-                    &a.filename,
-                    State::NvencDone,
-                    "Kodowanie pominięte — istnieje zweryfikowany plik tymczasowy",
-                );
-                continue;
-            }
-            plog!("    UWAGA: usuwam niekompletny plik tymczasowy: {}", p.temp_video.display());
-            let _ = fs::remove_file(&p.temp_video);
-        }
-
         while running.len() >= 2 {
             reap(opts, &mut running, panel);
             if proc::cancelled() {

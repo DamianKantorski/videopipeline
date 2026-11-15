@@ -99,9 +99,6 @@ struct Cli {
     /// Pomiń analizę HDR10+ (-ph)
     #[arg(long = "no-hdr10plus")]
     no_hdr10plus: bool,
-    /// DV/HDR10+ starą ścieżką: plik tymczasowy + dovi_tool / hdr10plus_tool + mkvmerge
-    #[arg(long = "legacy-inject")]
-    legacy_inject: bool,
     /// Zmniejsz obraz do 1920×1080 (proporcje zachowane, mniejsze źródła bez zmian)
     #[arg(long = "1080p", visible_alias = "scale-1080")]
     scale_1080: bool,
@@ -127,7 +124,7 @@ fn main() {
     }
 }
 
-/// Pakiety (deb w /opt, AppImage) trzymają ffmpeg, mkvmerge itd. obok binarki — dopisujemy ten katalog
+/// Pakiety (deb w /opt, AppImage) trzymają ffmpeg, mpv itd. obok binarki — dopisujemy ten katalog
 /// do PATH, żeby narzędzia były znalezione także po ponownym uruchomieniu w terminalu.
 fn prepend_bundled_tools_to_path() {
     let Ok(exe) = std::env::current_exe() else { return };
@@ -317,7 +314,6 @@ fn real_main() -> Result<i32> {
         no_crop: cli.no_crop,
         no_dv: cli.no_dv,
         no_hdr10plus: cli.no_hdr10plus,
-        legacy_inject: cli.legacy_inject,
         scale_1080: cli.scale_1080,
         full_log: cli.full_log,
         shutdown: cli.shutdown,

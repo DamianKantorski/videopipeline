@@ -20,6 +20,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 dolby_vision = "3.4"
 hdr10plus = { version = "2.1", features = ["hevc", "json"] }
 # Odczyt plików przez libavformat / libavcodec (biblioteki dynamiczne FFmpeg) zamiast ffprobe.
+libloading = "0.8"
 ffmpeg-next = { version = "9.1", default-features = false, features = ["format", "codec"], optional = true }
 
 [features]

@@ -33,13 +33,11 @@ if compgen -G "$OPT/lib/hostfirst/libva.so*" >/dev/null; then
 fi
 rm -rf "$OPT/lib/hostfirst"
 mkdir -p "$OPT/share"
-[[ -d "$APPDIR/usr/share/misc" ]] && cp -a "$APPDIR/usr/share/misc" "$OPT/share/"
 cp -a "$APPDIR/usr/share/licenses/videopipeline/." "$PKG/usr/share/doc/videopipeline/"
 
-# Polecenie w PATH: ustawia bazę typów plików dla dołączonego mkvmerge (libmagic), reszta jest w rpath/PATH aplikacji.
+# Polecenie w PATH; biblioteki i narzędzia aplikacja znajduje przez rpath / własny katalog.
 cat > "$PKG/usr/bin/videopipeline" <<'W'
 #!/bin/sh
-[ -f /opt/videopipeline/share/misc/magic.mgc ] && export MAGIC=/opt/videopipeline/share/misc/magic.mgc
 exec /opt/videopipeline/bin/videopipeline "$@"
 W
 chmod 755 "$PKG/usr/bin/videopipeline"
@@ -72,8 +70,8 @@ Suggests: nvidia-driver
 Maintainer: VideoPipeline <noreply@users.noreply.github.com>
 Homepage: https://github.com/8brzrs26ws-cloud/videopipeline
 Description: Kodowanie wideo HEVC/AV1 na GPU (NVIDIA NVENC, Intel QSV/VAAPI) z TUI w stylu MC
- Zawiera własne kopie ffmpeg (NVENC/NVDEC/CUDA, Intel VAAPI/QSV), bibliotek FFmpeg, mkvmerge,
- dovi_tool i hdr10plus_tool w /opt/videopipeline. Wymaga sterownika GPU z systemu
+ Zawiera własne kopie ffmpeg (NVENC/NVDEC/CUDA, Intel VAAPI/QSV), bibliotek FFmpeg
+ i MediaInfo w /opt/videopipeline. Wymaga sterownika GPU z systemu
  oraz procesora x86-64-v3 (Haswell / Zen 1 i nowsze).
 C
 

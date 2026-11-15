@@ -2,17 +2,17 @@
 # Buduje dist/VideoPipeline-<wersja>-x86_64_v3.AppImage z dołączonymi narzędziami:
 #   ffmpeg (NVENC/NVDEC/CUDA-LLVM statycznie; Intel QSV/VAAPI z libva/libvpl linkowanymi dynamicznie),
 #   biblioteki dynamiczne libavformat/libavcodec/libavutil (odczyt informacji o plikach zamiast ffprobe),
-#   mkvmerge, mediainfo, dovi_tool, hdr10plus_tool oraz odtwarzacz mpv (F3, budowany ze źródeł; MPV_VERSION)
+#   biblioteka MediaInfo (libmediainfo, okienko F2) oraz odtwarzacz mpv (F3, budowany ze źródeł; MPV_VERSION)
 #   i terminal videopipeline-term (Alacritty ze źródeł z ikoną VideoPipeline; ALACRITTY_VERSION).
-# Kod własny (videopipeline, biblioteka core, dovi_tool, hdr10plus_tool, ffmpeg) jest kompilowany
+# Kod własny (videopipeline, biblioteka core, ffmpeg) jest kompilowany
 # z -march/-C target-cpu=x86-64-v3. Sterowniki NVIDIA pochodzą z hosta i NIE są dołączane.
 #
 # Wymagania (Ubuntu/Debian):
-#   build-essential nasm pkg-config clang patchelf file wget git mkvtoolnix libdav1d-dev zlib1g-dev
+#   build-essential nasm pkg-config clang libclang-dev patchelf file wget git libmediainfo0v5 libdav1d-dev zlib1g-dev
 #   + rustup/cargo. Uruchamiane w CI przez .github/workflows/release.yml, ale działa też lokalnie.
 #
-# Zmienne: VERSION, FFMPEG_VERSION, NVCODEC_HEADERS_REF (domyślnie master), DOVI_TOOL_REF, HDR10PLUS_TOOL_REF
-# (dla trzech pierwszych narzędzi "latest" = najnowsze wydanie), INTEL=auto|1|0 (VAAPI + QSV/libvpl w ffmpeg),
+# Zmienne: VERSION, FFMPEG_VERSION, NVCODEC_HEADERS_REF (domyślnie master), MPV_VERSION, ALACRITTY_VERSION
+# ("latest" = najnowsze wydanie), INTEL=auto|1|0 (VAAPI + QSV/libvpl w ffmpeg),
 # TARGET_CPU, JOBS, FORCE=1. Zalecane uruchamianie: ./build-local.sh (Docker, Debian 13).
 set -euo pipefail
 
@@ -22,9 +22,6 @@ cd "$ROOT"
 VERSION="${VERSION:-$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.1}"
 NVCODEC_HEADERS_REF="${NVCODEC_HEADERS_REF:-}"
-# dovi_tool i hdr10plus_tool nie są na crates.io (tylko biblioteki dolby_vision/hdr10plus) — budujemy z GitHuba, z tagów.
-DOVI_TOOL_REF="${DOVI_TOOL_REF:-2.3.4}"
-HDR10PLUS_TOOL_REF="${HDR10PLUS_TOOL_REF:-1.7.2}"
 # Odtwarzacz mpv (F3) — budowany ze źródeł (tag vX.Y.Z z github.com/mpv-player/mpv); "latest" = najnowsze wydanie.
 MPV_VERSION="${MPV_VERSION:-latest}"
 # Terminal dołączony do paczek: Alacritty (tag vX.Y.Z) z ikoną VideoPipeline, jako videopipeline-term.
@@ -35,7 +32,7 @@ JOBS="${JOBS:-$(nproc)}"
 FORCE="${FORCE:-0}"
 
 BUILD="$ROOT/build"
-CACHE="$BUILD/cache"     # trwałe artefakty (cache w CI): ffmpeg, dovi_tool, hdr10plus_tool, linuxdeploy
+CACHE="$BUILD/cache"     # trwałe artefakty (cache w CI): ffmpeg, biblioteki FFmpeg, mpv, linuxdeploy
 WORK="$BUILD/work"       # katalog roboczy (AppDir)
 APPDIR="$WORK/AppDir"
 DIST="$ROOT/dist"
@@ -57,11 +54,15 @@ if [[ "$FFMPEG_VERSION" = latest ]]; then
     FFMPEG_VERSION="$(ffmpeg_latest "$BUILD/work")"
     [[ -n "$FFMPEG_VERSION" ]] || fail "nie udało się ustalić najnowszej wersji ffmpeg (ffmpeg.org, GitHub, git.ffmpeg.org) — podaj FFMPEG_VERSION=..."
 fi
-[[ "$DOVI_TOOL_REF" = latest ]] && DOVI_TOOL_REF="$(latest_git_tag https://github.com/quietvoid/dovi_tool)"
-[[ "$HDR10PLUS_TOOL_REF" = latest ]] && HDR10PLUS_TOOL_REF="$(latest_git_tag https://github.com/quietvoid/hdr10plus_tool)"
-echo "Wersje: ffmpeg $FFMPEG_VERSION, dovi_tool $DOVI_TOOL_REF, hdr10plus_tool $HDR10PLUS_TOOL_REF"
+echo "Wersje: ffmpeg $FFMPEG_VERSION"
 
-for c in cargo rustc gcc clang make nasm pkg-config git wget patchelf mkvmerge mediainfo meson ninja; do need "$c"; done
+for c in cargo rustc gcc clang make nasm pkg-config git wget patchelf meson ninja; do need "$c"; done
+# Biblioteka MediaInfo (okienko F2, --mediainfo) — ładowana przez program w trakcie działania.
+MEDIAINFO_SO=""
+for d in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu; do
+    if [[ -e "$d/libmediainfo.so.0" ]]; then MEDIAINFO_SO="$d/libmediainfo.so.0"; break; fi
+done
+[[ -n "$MEDIAINFO_SO" ]] || fail "brak libmediainfo.so.0 (pakiet libmediainfo0v5)"
 pkg-config --exists dav1d || fail "brak libdav1d-dev (pkg-config dav1d)"
 
 # --------------------------------------------------------------------------- 1. aplikacja
@@ -69,40 +70,20 @@ pkg-config --exists dav1d || fail "brak libdav1d-dev (pkg-config dav1d)"
 # kompilacją programu (funkcja `libav`, ffmpeg-sys-next czyta nagłówki i linkuje z nimi).
 LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
 if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
-    log "1/5 biblioteki FFmpeg $FFMPEG_VERSION (dynamiczne: libavformat, libavcodec, libavutil)"
+    log "1/4 biblioteki FFmpeg $FFMPEG_VERSION (dynamiczne: libavformat, libavcodec, libavutil)"
     libav_build "$FFMPEG_VERSION" "$WORK" "$WORK" "$LAVPREFIX" --libdir="$LAVPREFIX/lib" \
         --extra-cflags="-march=$TARGET_CPU -O2" \
         || fail "budowanie bibliotek FFmpeg (libav*) nie powiodło się"
 fi
-log "1/5 videopipeline + biblioteka core ($TARGET_CPU, informacje o plikach przez libavformat)"
+log "1/4 videopipeline + biblioteka core ($TARGET_CPU, informacje o plikach przez libavformat)"
 FFMPEG_DIR="$LAVPREFIX" LD_LIBRARY_PATH="$LAVPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     VP_RUSTFLAGS_EXTRA="-C target-cpu=$TARGET_CPU" bash ./build.sh --features videopipeline/libav
 REL="${CARGO_TARGET_DIR:-target}/release"
 [[ -x "$REL/videopipeline" && -f "$REL/libvideopipeline_core.so" ]] \
     || fail "build.sh nie wytworzył binarki/biblioteki"
 
-# --------------------------------------------------------------------------- 2. dovi_tool, hdr10plus_tool
-log "2/5 dovi_tool $DOVI_TOOL_REF (wbudowana czcionka, bez fontconfig) + hdr10plus_tool $HDR10PLUS_TOOL_REF (cargo install --git, $TARGET_CPU)"
-TOOLS="$CACHE/tools"
-STAMP="dovi_tool=$DOVI_TOOL_REF+internal-font hdr10plus_tool=$HDR10PLUS_TOOL_REF+internal-font cpu=$TARGET_CPU"
-if [[ "$FORCE" = 1 || ! -x "$TOOLS/bin/dovi_tool" || ! -x "$TOOLS/bin/hdr10plus_tool" \
-      || "$(cat "$TOOLS/.stamp" 2>/dev/null)" != "$STAMP" ]]; then
-    export RUSTFLAGS="-C target-cpu=$TARGET_CPU"
-    export CARGO_TARGET_DIR="$WORK/tools-target"
-    cargo install --locked --force --root "$TOOLS" \
-        --git https://github.com/quietvoid/dovi_tool --tag "$DOVI_TOOL_REF" \
-        --no-default-features --features internal-font dovi_tool
-    cargo install --locked --force --root "$TOOLS" \
-        --git https://github.com/quietvoid/hdr10plus_tool --tag "$HDR10PLUS_TOOL_REF" \
-        --no-default-features --features internal-font hdr10plus_tool
-    unset RUSTFLAGS CARGO_TARGET_DIR
-    echo "$STAMP" > "$TOOLS/.stamp"
-fi
-"$TOOLS/bin/dovi_tool" --version
-"$TOOLS/bin/hdr10plus_tool" --version
-
 # --------------------------------------------------------------------------- 3. ffmpeg
-log "3/5 ffmpeg $FFMPEG_VERSION (statyczny, NVENC/NVDEC/CUDA-LLVM + Intel VAAPI/QSV jeśli dostępne, $TARGET_CPU)"
+log "2/4 ffmpeg $FFMPEG_VERSION (statyczny, NVENC/NVDEC/CUDA-LLVM + Intel VAAPI/QSV jeśli dostępne, $TARGET_CPU)"
 # Intel (VAAPI + QSV przez oneVPL): libva, libdrm i libvpl są linkowane dynamicznie (Debian nie ma ich
 # wersji statycznych, a i tak muszą pasować do sterownika iHD i runtime'u oneVPL hosta — patrz AppRun).
 intel_available() {
@@ -132,7 +113,7 @@ if [[ "$LIBPLACEBO_REF" = latest ]]; then
 fi
 PLPREFIX="$CACHE/libplacebo-ff-$LIBPLACEBO_REF"
 if [[ "$FORCE" = 1 || ! -f "$PLPREFIX/lib/libplacebo.a" ]]; then
-    log "3/5 libplacebo $LIBPLACEBO_REF dla ffmpeg (statycznie, Vulkan + shaderc)"
+    log "2/4 libplacebo $LIBPLACEBO_REF dla ffmpeg (statycznie, Vulkan + shaderc)"
     rm -rf "$WORK/libplacebo-ff" "$PLPREFIX"
     git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$LIBPLACEBO_REF" \
         --recurse-submodules --shallow-submodules https://github.com/haasn/libplacebo.git "$WORK/libplacebo-ff"
@@ -235,7 +216,7 @@ if [[ "$MPV_VERSION" = latest ]]; then
     fi
     [[ -n "$MPV_VERSION" ]] || fail "nie udało się ustalić wersji mpv — podaj MPV_VERSION=..."
 fi
-log "3b/5 mpv $MPV_VERSION (ze źródeł, $TARGET_CPU)"
+log "2b/4 mpv $MPV_VERSION (ze źródeł, $TARGET_CPU)"
 MPVPREFIX="$CACHE/mpv-$MPV_VERSION"
 if [[ "$FORCE" = 1 || ! -x "$MPVPREFIX/bin/mpv" ]]; then
     rm -rf "$WORK/mpv" "$MPVPREFIX"
@@ -276,7 +257,7 @@ if [[ "$ALACRITTY_VERSION" = latest ]]; then
     fi
     [[ -n "$ALACRITTY_VERSION" ]] || fail "nie udało się ustalić wersji Alacritty — podaj ALACRITTY_VERSION=..."
 fi
-log "3c/5 terminal: Alacritty $ALACRITTY_VERSION jako videopipeline-term (ze źródeł)"
+log "2c/4 terminal: Alacritty $ALACRITTY_VERSION jako videopipeline-term (ze źródeł)"
 ICON_TAG="$(sha256sum "$ROOT/icons/videopipeline-64.png" | cut -c1-8)"
 TERMDIR="$CACHE/alacritty-$ALACRITTY_VERSION-$ICON_TAG"
 if [[ "$FORCE" = 1 || ! -x "$TERMDIR/videopipeline-term" ]]; then
@@ -298,10 +279,10 @@ fi
 "$TERMDIR/videopipeline-term" --version
 
 # --------------------------------------------------------------------------- 4. AppDir
-log "4/5 składanie AppDir"
+log "3/4 składanie AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
-         "$APPDIR/usr/share/licenses/videopipeline" "$APPDIR/usr/share/misc"
+         "$APPDIR/usr/share/licenses/videopipeline"
 
 install -m755 "$REL/videopipeline" "$APPDIR/usr/bin/"
 install -m755 "$REL/libvideopipeline_core.so" "$APPDIR/usr/lib/"
@@ -316,16 +297,11 @@ cp -a "$LAVPREFIX"/lib/lib{avformat,avcodec,avutil}.so.* "$APPDIR/usr/lib/"
 
 # ffprobe niepotrzebny — informacje o plikach program czyta przez libavformat.
 install -m755 "$FFPREFIX/bin/ffmpeg" "$APPDIR/usr/bin/"
-install -m755 "$TOOLS/bin/dovi_tool" "$TOOLS/bin/hdr10plus_tool" "$APPDIR/usr/bin/"
-install -m755 "$(command -v mkvmerge)" "$APPDIR/usr/bin/"
-install -m755 "$(command -v mediainfo)" "$APPDIR/usr/bin/"
+# libmediainfo nie jest w NEEDED (program ładuje ją sam) — kopia i jej zależności przez linuxdeploy --library.
+cp -L "$MEDIAINFO_SO" "$APPDIR/usr/lib/libmediainfo.so.0"
 install -m755 "$MPVPREFIX/bin/mpv" "$APPDIR/usr/bin/"
 install -m755 "$TERMDIR/videopipeline-term" "$APPDIR/usr/bin/"
 install -m644 packaging/videopipeline-term.toml "$APPDIR/usr/bin/"
-for m in /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc; do
-    if [[ -f "$m" ]]; then cp -L "$m" "$APPDIR/usr/share/misc/magic.mgc"; break; fi
-done
-
 install -m644 packaging/appimage/videopipeline.desktop "$APPDIR/usr/share/applications/"
 install -m644 LICENSE "$APPDIR/usr/share/licenses/videopipeline/LICENSE"
 install -m644 packaging/appimage/THIRD-PARTY-NOTICES.md "$APPDIR/usr/share/licenses/videopipeline/"
@@ -339,7 +315,7 @@ if grep -q 'not found' "$WORK/ldd.txt"; then
 fi
 
 # --------------------------------------------------------------------------- 5. obraz
-log "5/5 linuxdeploy → AppImage"
+log "4/4 linuxdeploy → AppImage"
 BIN="$CACHE/bin"
 mkdir -p "$BIN"
 dl() {   # $1 = repo linuxdeploy/<repo>, $2 = nazwa pliku w wydaniu "continuous"
@@ -371,13 +347,10 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
     "$BIN/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/videopipeline" \
-        --executable "$APPDIR/usr/bin/mkvmerge" \
-        --executable "$APPDIR/usr/bin/mediainfo" \
         --executable "$APPDIR/usr/bin/mpv" \
         --executable "$APPDIR/usr/bin/videopipeline-term" \
         --executable "$APPDIR/usr/bin/ffmpeg" \
-        --executable "$APPDIR/usr/bin/dovi_tool" \
-        --executable "$APPDIR/usr/bin/hdr10plus_tool" \
+        --library "$APPDIR/usr/lib/libmediainfo.so.0" \
         --desktop-file "$APPDIR/usr/share/applications/videopipeline.desktop" \
         --icon-file "$ROOT/icons/videopipeline-256.png" --icon-filename videopipeline \
         --custom-apprun "$ROOT/packaging/appimage/AppRun"

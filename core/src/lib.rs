@@ -13,6 +13,7 @@ pub mod copy;
 pub mod encode;
 pub mod files;
 pub mod hw;
+pub mod extract;
 pub mod inject;
 #[cfg(feature = "libav")]
 pub mod libav;

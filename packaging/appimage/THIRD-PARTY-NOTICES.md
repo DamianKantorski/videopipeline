@@ -10,21 +10,18 @@
 | zimg (filtr zscale w ffmpeg — mapowanie tonów HDR → SDR; Linux: biblioteka z Debiana, Windows: statycznie) | WTFPL | https://github.com/sekrit-twc/zimg |
 | OpenCL ICD Loader (tonemap_opencl w ffmpeg; Linux: ocl-icd z Debiana, Windows: ładowarka Khronos statycznie) | Apache-2.0 / BSD-2-Clause | https://github.com/KhronosGroup/OpenCL-ICD-Loader |
 | dav1d (statycznie w ffmpeg) | BSD-2-Clause | https://code.videolan.org/videolan/dav1d |
-| MKVToolNix (mkvmerge) — Linux: z bibliotekami z dystrybucji Debian; Windows: oficjalna wersja przenośna | GPL-2.0 | https://mkvtoolnix.download/source.html |
-| MediaInfo (CLI; Linux: z bibliotekami z dystrybucji Debian, Windows: oficjalne CLI MediaArea) | BSD-2-Clause | https://mediaarea.net/MediaInfo |
+| MediaInfoLib (biblioteka MediaInfo — okienko F2; Linux: libmediainfo i libzen z dystrybucji Debian z zależnościami, Windows: oficjalna MediaInfo.dll MediaArea) | BSD-2-Clause (libzen: zlib) | https://mediaarea.net/MediaInfo |
 | mpv (odtwarzacz pod F3) — Linux: budowany ze źródeł z bibliotekami z dystrybucji Debian (FFmpeg/libav*, libass, shaderc, Lua…); Windows: gotowa kompilacja shinchiro/mpv-winbuild-cmake | GPL-2.0+ | https://github.com/mpv-player/mpv, https://github.com/shinchiro/mpv-winbuild-cmake |
 | libplacebo (statycznie w ffmpeg — filtr libplacebo; Linux: także w mpv; budowana ze źródeł) | LGPL-2.1+ | https://code.videolan.org/videolan/libplacebo |
 | glslang (Windows: statycznie w ffmpeg.exe, kompilator shaderów libplacebo) | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 | https://github.com/KhronosGroup/glslang |
 | shaderc (Linux: kompilator shaderów libplacebo, z Debiana) | Apache-2.0 | https://github.com/google/shaderc |
 | Vulkan-Headers (nagłówki; ffmpeg ładuje sterownik Vulkan w trakcie działania) | Apache-2.0 / MIT | https://github.com/KhronosGroup/Vulkan-Headers |
 | Alacritty (terminal `videopipeline-term`, budowany ze źródeł z podmienioną ikoną) | Apache-2.0 (LICENSE-ALACRITTY) | https://github.com/alacritty/alacritty |
-| dovi_tool | MIT | https://github.com/quietvoid/dovi_tool |
-| hdr10plus_tool | MIT | https://github.com/quietvoid/hdr10plus_tool |
-| dolby_vision, hdr10plus (biblioteki Rust w programie — wstrzykiwanie DV/HDR10+ w locie) | MIT | https://github.com/quietvoid/dovi_tool, https://github.com/quietvoid/hdr10plus_tool |
+| dolby_vision, hdr10plus (biblioteki Rust w programie — odczyt i wstrzykiwanie DV/HDR10+) | MIT | https://github.com/quietvoid/dovi_tool, https://github.com/quietvoid/hdr10plus_tool |
 | Biblioteka standardowa Rusta (libstd / std-*.dll) | MIT / Apache-2.0 | https://github.com/rust-lang/rust |
 | Windows: środowisko uruchomieniowe MinGW-w64 (libgcc, libstdc++, winpthreads — statycznie lub jako DLL) | GPL-3.0 z wyjątkiem GCC Runtime Library / MIT / ZPL | https://www.mingw-w64.org |
 
-Źródła pakietów Debiana (mkvtoolnix, mediainfo, biblioteki mpv i ich zależności) są dostępne przez `apt-get source <pakiet>`
+Źródła pakietów Debiana (libmediainfo, biblioteki mpv i ich zależności) są dostępne przez `apt-get source <pakiet>`
 albo na https://packages.debian.org. Wersje użyte w danym wydaniu są wypisywane na początku
 logu budowania (`./build-local.sh`).
 

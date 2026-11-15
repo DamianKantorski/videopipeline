@@ -61,17 +61,6 @@ pub fn scale_l5(rpus: &mut [DoviRpu], (sx, sy): (f64, f64)) -> Result<usize> {
     Ok(n)
 }
 
-/// Zapis RPU w formacie dovi_tool (Annex-B, NAL 62) — dla starej ścieżki.
-pub fn write_rpu_file(path: &Path, rpus: &[DoviRpu]) -> Result<()> {
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    for r in rpus {
-        out.write_all(&[0, 0, 0, 1])?;
-        out.write_all(&r.write_hevc_unspec62_nalu()?)?;
-    }
-    out.flush()?;
-    Ok(())
-}
-
 impl Metadata {
     /// `l5_scale`: współczynniki skalowania obrazu (szerokość, wysokość) — przelicza obszar aktywny L5.
     pub fn load(rpu: Option<&Path>, hdr10plus_json: Option<&Path>, l5_scale: Option<(f64, f64)>) -> Result<Self> {
@@ -148,7 +137,7 @@ impl Stats {
 // ---------------------------------------------------------------------------------------------
 
 /// Usuwa bajty 0x03 zapobiegające emulacji kodu startowego (00 00 03 → 00 00).
-fn unescape(data: &[u8], limit: usize) -> Vec<u8> {
+pub(crate) fn unescape(data: &[u8], limit: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len().min(limit));
     let mut zeros = 0;
     for &b in data.iter().take(limit) {
@@ -276,13 +265,13 @@ fn parse_pps(nal: &[u8]) -> Result<(usize, Pps)> {
     Ok((id, Pps { sps_id, output_flag_present, num_extra_slice_header_bits }))
 }
 
-fn nal_type(nal: &[u8]) -> u8 {
+pub(crate) fn nal_type(nal: &[u8]) -> u8 {
     (nal[0] >> 1) & 0x3f
 }
-fn is_vcl(t: u8) -> bool {
+pub(crate) fn is_vcl(t: u8) -> bool {
     t < 32
 }
-fn is_irap(t: u8) -> bool {
+pub(crate) fn is_irap(t: u8) -> bool {
     (16..=23).contains(&t)
 }
 fn is_idr(t: u8) -> bool {
@@ -292,30 +281,30 @@ fn is_bla(t: u8) -> bool {
     (16..=18).contains(&t)
 }
 /// NAL zaczynający nową klatkę, jeśli bieżąca ma już slice.
-fn starts_au(t: u8) -> bool {
+pub(crate) fn starts_au(t: u8) -> bool {
     matches!(t, 32..=35 | 39 | 41..=44 | 48..=55)
 }
 
 const NAL_AUD: u8 = 35;
 const NAL_EOS: u8 = 36;
-const NAL_UNSPEC62: u8 = 62;
+pub(crate) const NAL_UNSPEC62: u8 = 62;
 
 // ---------------------------------------------------------------------------------------------
 // Kolejność wyświetlania
 // ---------------------------------------------------------------------------------------------
 
 /// Bufor wyjściowy: klatki w kolejności dekodowania czekają na swój numer w kolejności wyświetlania.
-struct Reorder {
+pub(crate) struct Reorder {
     pending: Vec<(i64, u64)>, // (POC, numer dekodowania)
     next_pres: u64,
-    assigned: Vec<(u64, u64)>, // (numer dekodowania, numer wyświetlania) — do odebrania
+    pub(crate) assigned: Vec<(u64, u64)>, // (numer dekodowania, numer wyświetlania) — do odebrania
 }
 
 /// Zapas większy od największego dopuszczalnego przestawienia klatek w HEVC (15).
 const REORDER_DEPTH: usize = 16;
 
 impl Reorder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Reorder { pending: vec![], next_pres: 0, assigned: vec![] }
     }
     fn bump(&mut self) {
@@ -324,12 +313,12 @@ impl Reorder {
         self.assigned.push((id, self.next_pres));
         self.next_pres += 1;
     }
-    fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         while !self.pending.is_empty() {
             self.bump();
         }
     }
-    fn add(&mut self, id: u64, poc: i64, new_sequence: bool) {
+    pub(crate) fn add(&mut self, id: u64, poc: i64, new_sequence: bool) {
         if new_sequence {
             self.flush();
         }
@@ -558,13 +547,9 @@ struct Queued {
 struct Injector<'m, W: Write> {
     meta: &'m Metadata,
     info: StreamInfo,
-    sps: Vec<Option<Sps>>,
-    pps: Vec<Option<Pps>>,
+    pp: PocParser,
     /// Parametry z początku strumienia (VPS/SPS/PPS) — CodecPrivate.
     headers: Vec<Vec<u8>>,
-    prev_tid0_poc: i64,
-    first_pic: bool,
-    after_eos: bool,
     reorder: Reorder,
     queue: VecDeque<Queued>,
     next_id: u64,
@@ -580,9 +565,42 @@ fn set<T: Clone>(v: &mut Vec<Option<T>>, id: usize, x: T) {
     v[id] = Some(x);
 }
 
-impl<W: Write> Injector<'_, W> {
+/// Numeracja klatek HEVC: zestawy parametrów (SPS/PPS) i POC z nagłówka pierwszego slice'a klatki.
+pub(crate) struct PocParser {
+    sps: Vec<Option<Sps>>,
+    pps: Vec<Option<Pps>>,
+    prev_tid0_poc: i64,
+    first_pic: bool,
+    after_eos: bool,
+    /// Wymiary obrazu z pierwszego SPS użytego przez klatkę.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PocParser {
+    pub(crate) fn new() -> Self {
+        PocParser { sps: vec![], pps: vec![], prev_tid0_poc: 0, first_pic: true, after_eos: false, width: 0, height: 0 }
+    }
+
+    /// SPS, PPS i koniec sekwencji (EOS) — reszta NAL bez znaczenia dla numeracji.
+    pub(crate) fn param(&mut self, t: u8, nal: &[u8]) -> Result<()> {
+        match t {
+            33 => {
+                let (id, s) = parse_sps(nal).context("SPS")?;
+                set(&mut self.sps, id, s);
+            }
+            34 => {
+                let (id, p) = parse_pps(nal).context("PPS")?;
+                set(&mut self.pps, id, p);
+            }
+            NAL_EOS => self.after_eos = true,
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// POC i wymiary z pierwszego slice'a klatki. Zwraca (POC, początek nowej sekwencji).
-    fn slice_poc(&mut self, nal: &[u8]) -> Result<(i64, bool)> {
+    pub(crate) fn slice_poc(&mut self, nal: &[u8]) -> Result<(i64, bool)> {
         let t = nal_type(nal);
         let temporal_id = (nal[1] & 7).saturating_sub(1);
         let d = unescape(nal, 64);
@@ -594,9 +612,9 @@ impl<W: Write> Injector<'_, W> {
         let pps_id = b.ue()? as usize;
         let pps = self.pps.get(pps_id).cloned().flatten().with_context(|| format!("brak PPS {pps_id}"))?;
         let sps = self.sps.get(pps.sps_id).cloned().flatten().with_context(|| format!("brak SPS {}", pps.sps_id))?;
-        if self.stats.width == 0 {
-            self.stats.width = sps.width;
-            self.stats.height = sps.height;
+        if self.width == 0 {
+            self.width = sps.width;
+            self.height = sps.height;
         }
         b.skip(pps.num_extra_slice_header_bits);
         b.ue()?; // slice_type
@@ -638,6 +656,9 @@ impl<W: Write> Injector<'_, W> {
         Ok((poc, new_sequence))
     }
 
+}
+
+impl<W: Write> Injector<'_, W> {
     fn nal(&mut self, au: &mut Au, nal: Vec<u8>) -> Result<()> {
         if nal.len() < 2 || nal[0] & 0x80 != 0 {
             return Ok(()); // pusty albo uszkodzony
@@ -654,7 +675,11 @@ impl<W: Write> Injector<'_, W> {
                 self.finish_au(std::mem::replace(au, Au::new()))?;
             }
             if first_slice {
-                let (poc, new_seq) = self.slice_poc(&nal)?;
+                let (poc, new_seq) = self.pp.slice_poc(&nal)?;
+                if self.stats.width == 0 {
+                    self.stats.width = self.pp.width;
+                    self.stats.height = self.pp.height;
+                }
                 let id = self.next_id;
                 self.next_id += 1;
                 self.reorder.add(id, poc, new_seq);
@@ -669,18 +694,7 @@ impl<W: Write> Injector<'_, W> {
         if starts_au(t) && au.has_vcl {
             self.finish_au(std::mem::replace(au, Au::new()))?;
         }
-        match t {
-            33 => {
-                let (id, s) = parse_sps(&nal).context("SPS")?;
-                set(&mut self.sps, id, s);
-            }
-            34 => {
-                let (id, p) = parse_pps(&nal).context("PPS")?;
-                set(&mut self.pps, id, p);
-            }
-            NAL_EOS => self.after_eos = true,
-            _ => {}
-        }
+        self.pp.param(t, &nal)?;
         // CodecPrivate: zestaw parametrów sprzed pierwszej klatki.
         if (32..=34).contains(&t) && self.next_id == 0 {
             self.headers.push(nal.clone());
@@ -771,25 +785,8 @@ impl<W: Write> Injector<'_, W> {
     }
 }
 
-/// Czyta Annex-B HEVC z `input`, dokleja metadane i zapisuje Matroska do `output`.
-pub fn run<R: Read, W: Write>(mut input: R, output: W, meta: &Metadata, info: StreamInfo) -> Result<Stats> {
-    let mut inj = Injector {
-        meta,
-        info,
-        sps: vec![],
-        pps: vec![],
-        headers: vec![],
-        prev_tid0_poc: 0,
-        first_pic: true,
-        after_eos: false,
-        reorder: Reorder::new(),
-        queue: VecDeque::new(),
-        next_id: 0,
-        out: Some(output),
-        mkv: None,
-        stats: Stats { rpus: meta.rpus.len(), hdr10plus: meta.hdr10plus.len(), ..Default::default() },
-    };
-    let mut au = Au::new();
+/// Strumień Annex-B (kody startowe 00 00 01 / 00 00 00 01) → kolejne NAL bez kodów startowych.
+pub(crate) fn split_annexb<R: Read>(input: &mut R, mut f: impl FnMut(Vec<u8>) -> Result<()>) -> Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(4 << 20);
     let mut chunk = vec![0u8; 1 << 20];
     // Pozycja początku bieżącego NAL (za kodem startowym) i miejsce, od którego szukamy dalej.
@@ -807,7 +804,7 @@ pub fn run<R: Read, W: Write>(mut input: R, output: W, meta: &Metadata, info: St
                     while end > s && buf[end - 1] == 0 {
                         end -= 1; // zera końcowe i pierwsze zero 4-bajtowego kodu startowego
                     }
-                    inj.nal(&mut au, buf[s..end].to_vec())?;
+                    f(buf[s..end].to_vec())?;
                 }
                 nal_start = Some(i + 1);
             }
@@ -829,8 +826,58 @@ pub fn run<R: Read, W: Write>(mut input: R, output: W, meta: &Metadata, info: St
         while end > s && buf[end - 1] == 0 {
             end -= 1;
         }
-        inj.nal(&mut au, buf[s..end].to_vec())?;
+        f(buf[s..end].to_vec())?;
     }
+    Ok(())
+}
+
+/// NAL z bufora Annex-B w pamięci (np. pakiet z kontenera MPEG-TS).
+#[cfg_attr(not(feature = "libav"), allow(dead_code))]
+pub(crate) fn annexb_nals(buf: &[u8]) -> Vec<&[u8]> {
+    let mut out = vec![];
+    let mut start: Option<usize> = None;
+    let mut i = 2;
+    while i < buf.len() {
+        if buf[i] == 1 && buf[i - 1] == 0 && buf[i - 2] == 0 {
+            if let Some(s) = start {
+                let mut end = i - 2;
+                while end > s && buf[end - 1] == 0 {
+                    end -= 1;
+                }
+                out.push(&buf[s..end]);
+            }
+            start = Some(i + 1);
+        }
+        i += 1;
+    }
+    if let Some(s) = start {
+        let mut end = buf.len();
+        while end > s && buf[end - 1] == 0 {
+            end -= 1;
+        }
+        if end > s {
+            out.push(&buf[s..end]);
+        }
+    }
+    out
+}
+
+/// Czyta Annex-B HEVC z `input`, dokleja metadane i zapisuje Matroska do `output`.
+pub fn run<R: Read, W: Write>(mut input: R, output: W, meta: &Metadata, info: StreamInfo) -> Result<Stats> {
+    let mut inj = Injector {
+        meta,
+        info,
+        pp: PocParser::new(),
+        headers: vec![],
+        reorder: Reorder::new(),
+        queue: VecDeque::new(),
+        next_id: 0,
+        out: Some(output),
+        mkv: None,
+        stats: Stats { rpus: meta.rpus.len(), hdr10plus: meta.hdr10plus.len(), ..Default::default() },
+    };
+    let mut au = Au::new();
+    split_annexb(&mut input, |nal| inj.nal(&mut au, nal))?;
     inj.finish_au(au)?;
     inj.drain(true)?;
     if !inj.queue.is_empty() {

@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-/// Polecenie dla narzędzia pomocniczego (ffmpeg, ffprobe, mkvmerge, mediainfo, dovi_tool…).
+/// Polecenie dla narzędzia pomocniczego (ffmpeg, ffprobe, mpv…).
 /// Windows: proces nie dołącza się do konsoli programu (CREATE_NO_WINDOW) — narzędzie konsolowe
 /// nie może zmienić trybu konsoli ani zablokować okna z TUI (ConPTY w videopipeline-term, conhost,
 /// Windows Terminal). Wejście i wyjście narzędzi i tak są przekierowane (null, potok, plik).

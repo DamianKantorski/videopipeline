@@ -32,7 +32,7 @@ Więcej zrzutów: [galeria](#galeria).
 | Karta NVIDIA | AVC i HEVC: GeForce GTX 10xx (Pascal) lub nowsza; AV1: RTX 40xx / 50xx. Sterownik 570 lub nowszy (`nvidia-smi` do monitora obciążenia) |
 | Karta Intel | AVC i HEVC: Core 7. gen. (Kaby Lake) lub nowszy; AV1: Arc (A/B), Core Ultra (Meteor Lake) lub nowszy |
 | Sterowniki Intel | Linux: `intel-media-driver` (iHD, VA-API) i runtime oneVPL: `vpl-gpu-rt` (Tiger Lake i nowsze) albo `intel-media-sdk` (starsze); na Debianie `intel-media-va-driver-non-free` i `libmfx-gen1.2`; użytkownik w grupie `render`. Windows: aktualny sterownik grafiki Intel (zawiera runtime oneVPL) |
-| Miejsce na dysku | na wynik (pliki tymczasowe wideo tylko przy `--legacy-inject`) |
+| Miejsce na dysku | na wynik (bez plików tymczasowych wideo) |
 
 Wystarczy jedna karta. Gdy w komputerze są obie, domyślnie koduje NVIDIA, a Intela wybiera się jawnie (niżej).
 
@@ -40,7 +40,7 @@ Wystarczy jedna karta. Gdy w komputerze są obie, domyślnie koduje NVIDIA, a In
 
 Gotowe pliki są na stronie [Releases](https://github.com/8brzrs26ws-cloud/videopipeline/releases). Każdy wariant zawiera
 własne ffmpeg (NVENC i QSV; na Linuksie także VAAPI) i biblioteki FFmpeg (libavformat, libavcodec, libavutil — przez nie
-program czyta informacje o plikach, bez uruchamiania ffprobe), mkvmerge, MediaInfo, dovi_tool i hdr10plus_tool; sterowniki GPU
+program czyta informacje o plikach, bez uruchamiania ffprobe) oraz bibliotekę MediaInfo; sterowniki GPU
 pochodzą z systemu.
 
 **AppImage** (dowolna dystrybucja spełniająca wymagania):
@@ -157,7 +157,7 @@ wypisywanym jako tekst.
     videopipeline --intel -q 22 film.mp4       # HEVC na karcie Intel, CQ 22
     videopipeline -b                           # bieżący katalog
     videopipeline --detect                     # pokaż wykryte enkodery i zakończ
-    videopipeline --mediainfo film.mkv         # pełny raport MediaInfo (jak `mediainfo film.mkv`)
+    videopipeline --mediainfo film.mkv         # pełny raport MediaInfo (jak `mediainfo film.mkv`, przez libmediainfo)
 
 Kod wyjścia: 0 — sukces, 1 — błędy, 130 — przerwano (Ctrl+C). `--tui` z plikami otwiera TUI z wypełnioną kolejką.
 
@@ -188,8 +188,7 @@ Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecno�
 | `--1080p` | zmniejszenie obrazu do 1920×1080 z zachowaniem proporcji (po kadrowaniu, np. 3840×1600 → 1920×800); mniejsze źródła bez zmian. NVIDIA: na CPU (Lanczos) przed NVENC, Intel: `vpp_qsv` / `scale_vaapi` na karcie. Obszar aktywny Dolby Vision (L5) jest przeliczany. Nazwa wyniku dostaje `_1080p` |
 | `--audio auto\|copy\|aac\|alac\|flac\|ac3` | kodek ścieżek audio (także w F7, zaraz pod kodekiem wideo). `auto` (domyślnie, „jak źródło”): kopia; PCM → FLAC w MKV / AAC w MP4; nagrania z iPhone'a / iPada → AAC; do MP4 kodeki spoza MP4 (DTS, TrueHD) → E-AC-3 640k. `aac`: wbudowany koder ffmpeg, CBR 160 kb/s na kanał (stereo 320k, 5.1 960k). `alac` / `flac`: bezstratnie, 16 albo 24 bity jak źródło. `ac3`: Dolby Digital 640k (stereo 448k) — np. PS4 z AVC. Ścieżka już w wybranym kodeku jest kopiowana |
 | `--strip-meta` | bez lokalizacji (GPS) i danych urządzenia (marka, model, wersja oprogramowania, znaczniki aplikacji) w pliku wynikowym; zostaje tytuł i data nagrania. Także w F7 |
-| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg, dovi_tool, hdr10plus_tool, mkvmerge, mediainfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
-| `--legacy-inject` | Dolby Vision / HDR10+ starą ścieżką: plik tymczasowy `.hevc`, dovi_tool / hdr10plus_tool i mkvmerge (domyślnie w locie, bez plików pośrednich) |
+| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg; także odczyty przez biblioteki FFmpeg i MediaInfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
 | `-pdv`, `-ph` | bez Dolby Vision / bez HDR10+ |
 | `-c` | kopia wyniku do `<katalog źródła>/encoded` z weryfikacją SHA-512 |
 | `-s` | wyłącz komputer po zakończeniu |
@@ -221,21 +220,21 @@ TrueHD) jest przekodowywane do E-AC-3 640k, napisy tekstowe do mov_text, a obraz
 Nazwa zawiera kodek i opcje, np. `film_hevc.mkv`, `film_hevc_qsv_cq22.mkv`, `film_av1_10bit_cq23_da.mkv`, więc wyniki
 z różnymi ustawieniami się nie nadpisują.
 
-**Analiza Dolby Vision i HDR10+** czyta strumień wideo raz dla obu narzędzi (dovi_tool i hdr10plus_tool dostają
-te same dane), a okno analizy pokazuje postęp odczytu: procent, pozycję w filmie, prędkość i szacowany czas do końca.
+**Analiza Dolby Vision i HDR10+** czyta strumień wideo raz, w programie: pakiety HEVC prosto z kontenera (biblioteki
+FFmpeg), z których RPU Dolby Vision i metadane HDR10+ trafiają do plików w tych samych formatach co z `dovi_tool
+extract-rpu` / `hdr10plus_tool extract` (wynik identyczny, bajt w bajt). Okno analizy pokazuje postęp odczytu: procent,
+pozycję w filmie, prędkość i szacowany czas do końca.
 
 **Bez plików tymczasowych.** ffmpeg koduje wideo i od razu zapisuje plik wynikowy razem z audio (kopia, a E-AC-3
 z `-pleac3` / `-da` w locie) i napisami — bez pośrednich plików `.hevc`/`.eac3` i bez osobnego muksowania. Do czasu
 ukończenia plik ma końcówkę `.part`.
 
 **Dolby Vision i HDR10+ w locie.** Przy źródłach z DV / HDR10+ (HEVC) koder wysyła surowy strumień HEVC do programu,
-który dokleja do każdej klatki jej RPU Dolby Vision i SEI HDR10+ (biblioteki z dovi_tool i hdr10plus_tool), a drugi
+który dokleja do każdej klatki jej RPU Dolby Vision i SEI HDR10+ (biblioteki dolby_vision i hdr10plus), a drugi
 ffmpeg od razu składa z tego plik wynikowy z audio i napisami. Metadane trafiają do klatek według kolejności wyświetlania,
-tak samo jak w `dovi_tool inject-rpu` / `hdr10plus_tool inject` — wynik jest identyczny jak przy starej ścieżce, a plik
+tak samo jak w `dovi_tool inject-rpu` / `hdr10plus_tool inject` (wynik sprawdzony z tymi narzędziami), a plik
 ma rekord konfiguracji DV (dvcC/dvvC) w MKV i w MP4. RPU profilu 7 (dwie warstwy) są przerabiane na 8.1, bo kodowana
-jest tylko warstwa bazowa. Stara ścieżka (plik tymczasowy `.hevc` → hdr10plus_tool → dovi_tool → mkvmerge) jest dostępna
-w F7 albo przez `--legacy-inject`; jej pliki pośrednie są usuwane zaraz po udanym kolejnym kroku, a przerwane kodowanie
-wznawia się od ostatniego ukończonego etapu.
+jest tylko warstwa bazowa. Program nie potrzebuje do tego dovi_tool, hdr10plus_tool ani mkvmerge.
 
 ## Galeria
 
@@ -279,10 +278,10 @@ Kliknij miniaturę, żeby zobaczyć pełny rozmiar.
 
 ### Wersja deweloperska
 
-Potrzebne: Rust (stable) oraz w `PATH`: ffmpeg i ffprobe z obsługą wybranej karty (NVENC/CUDA albo QSV/VAAPI),
-mkvmerge (mkvtoolnix), mediainfo, mpv (opcjonalnie, dla F3), [dovi_tool](https://github.com/quietvoid/dovi_tool), [hdr10plus_tool](https://github.com/quietvoid/hdr10plus_tool).
+Potrzebne: Rust (stable), w `PATH` ffmpeg i ffprobe z obsługą wybranej karty (NVENC/CUDA albo QSV/VAAPI) i mpv
+(opcjonalnie, dla F3) oraz biblioteka libmediainfo (okienko F2; pakiet `libmediainfo0v5` / `libmediainfo`).
 
-    ./install-build-deps.sh --dev   # raz: Rust (rustup), ffmpeg, mkvtoolnix, mediainfo, mpv (Arch, Debian)
+    ./install-build-deps.sh --dev   # raz: Rust (rustup), ffmpeg, libmediainfo, mpv (Arch, Debian)
     ./build.sh       # target/release/videopipeline + libvideopipeline_core.so
     FFMPEG_DIR=/ścieżka/do/ffmpeg ./build.sh --features videopipeline/libav   # opcjonalnie, jak w paczkach
     ./install.sh     # opcjonalnie: ~/.local/bin (z biblioteką libstd Rusta), ikona i wpis w menu
@@ -299,8 +298,8 @@ i leżeć w tym samym katalogu (albo binarka w `bin/`, biblioteka w `../lib/`).
 ### Wydania: AppImage, deb i Windows (Docker)
 
 Wydania buduje się w kontenerze Debian 13, więc wynik nie zależy od systemu, na którym budujesz. Wersja dla Windows
-powstaje tam przez kroskompilację (MinGW-w64, cel Rusta `x86_64-pc-windows-gnu`): aplikacja, dovi_tool, hdr10plus_tool,
-dav1d, libvpl i ffmpeg są kompilowane ze źródeł, a mkvmerge pochodzi z oficjalnej wersji przenośnej MKVToolNix.
+powstaje tam przez kroskompilację (MinGW-w64, cel Rusta `x86_64-pc-windows-gnu`): aplikacja, dav1d, libvpl, ffmpeg
+i biblioteki FFmpeg są kompilowane ze źródeł, a MediaInfo.dll pochodzi z oficjalnej paczki MediaArea.
 Odtwarzacz mpv (F3) dla Linuksa jest kompilowany ze źródeł; dla Windows dołączany jest gotowy build
 [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) (x86-64-v3), bo kroskompilacja mpv
 z całym drzewem zależności byłaby bardzo długa.
@@ -316,9 +315,8 @@ Zmienne dla `build-local.sh`:
 | Zmienna | Znaczenie |
 |---|---|
 | `FFMPEG_VERSION` | wersja ffmpeg, domyślnie `latest` (najnowsze wydanie) |
-| `DOVI_TOOL_REF`, `HDR10PLUS_TOOL_REF` | tagi narzędzi (domyślnie przypięte), `latest` = najnowsze |
 | `INTEL` | Linux: `auto` (domyślnie), `1` — wymagaj QSV/VAAPI, `0` — bez Intela |
-| `DAV1D_REF`, `LIBVPL_REF`, `MKVTOOLNIX_VERSION`, `MEDIAINFO_VERSION` | Windows: wersje bibliotek, MKVToolNix i MediaInfo, domyślnie `latest` |
+| `DAV1D_REF`, `LIBVPL_REF`, `MEDIAINFO_VERSION` | Windows: wersje bibliotek i MediaInfo.dll, domyślnie `latest` |
 | `MPV_VERSION` | Linux: wersja mpv budowanego ze źródeł (np. `0.41.0`), domyślnie `latest` |
 | `LIBPLACEBO_REF` | Linux: wersja libplacebo budowanej razem z mpv, domyślnie `latest` (najnowsza zgodna z wymaganiem mpv) |
 | `ALACRITTY_VERSION` | wersja Alacritty (terminal `videopipeline-term`), domyślnie `latest` |

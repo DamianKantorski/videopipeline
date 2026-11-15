@@ -124,9 +124,8 @@ fn stages(opts: &Opts, rt: &Runtime, files: &[PathBuf], panel: &Panel) -> Result
         }
         if p.analysis.exists() {
             // Analiza jest nieaktualna, gdy pominęła etap, którego opcje teraz wymagają
-            // (np. wcześniej z --no-dv, teraz z DV). Dotyczy tylko plików bez gotowego wideo.
-            let stale = !p.has_encoded_video()
-                && Analysis::load(&p.analysis).map(|a| a.stale_for(opts)).unwrap_or(true);
+            // (np. wcześniej z --no-dv, teraz z DV).
+            let stale = Analysis::load(&p.analysis).map(|a| a.stale_for(opts)).unwrap_or(true);
             if !stale {
                 panel.set(&filename, State::Nvenc, "Analiza pominięta — istnieje plik analizy");
                 continue;
@@ -167,9 +166,9 @@ fn stages(opts: &Opts, rt: &Runtime, files: &[PathBuf], panel: &Panel) -> Result
         return Ok(());
     }
 
-    // ===== ETAP 3: mux + audio ==================================================
-    plog!("ETAP 3/3: MUKSOWANIE, METADANE I AUDIO");
-    panel.draw("ETAP 3/3 — MUKSOWANIE I AUDIO");
+    // ===== ETAP 3: zakończenie ==================================================
+    plog!("ETAP 3/3: ZAKOŃCZENIE (sprzątanie, kopia -c)");
+    panel.draw("ETAP 3/3 — ZAKOŃCZENIE");
     for (file, a) in &loaded {
         if proc::cancelled() {
             return Ok(());

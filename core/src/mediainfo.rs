@@ -1,11 +1,12 @@
-//! Informacje o pliku przez program MediaInfo (dołączony do paczek, jak ffmpeg).
+//! Informacje o pliku przez bibliotekę MediaInfo (libmediainfo / MediaInfo.dll, ładowana w trakcie
+//! działania — dołączona do paczek; bez niej tylko okienko F2 i `--mediainfo` nie działają).
 //! `easy` — skrót w stylu widoku „Easy” z MediaInfo GUI (do okienka F2),
-//! `full` — pełny raport tekstowy `mediainfo <plik>` (tryb skryptowy).
-use crate::log::LoggedOutput;
+//! `full` — pełny raport tekstowy jak `mediainfo <plik>` (tryb skryptowy).
 use serde_json::Value;
 use std::{
+    ffi::{c_char, c_void, CStr, CString},
     path::Path,
-    process::Stdio,
+    sync::OnceLock,
 };
 
 /// Sekcja raportu jak w widoku „Easy” MediaInfo: tytuł i zwięzłe linie.
@@ -14,27 +15,124 @@ pub struct Section {
     pub lines: Vec<String>,
 }
 
-fn run(args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let out = crate::proc::command("mediainfo")
-        .args(args)
-        .stdin(Stdio::null())
-        .logged_output()
-        .map_err(|e| format!("nie można uruchomić mediainfo: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if err.is_empty() { "mediainfo zakończył się błędem".into() } else { err });
+type FnNew = unsafe extern "C" fn() -> *mut c_void;
+type FnOpen = unsafe extern "C" fn(*mut c_void, *const c_char) -> usize;
+type FnOption = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> *const c_char;
+type FnInform = unsafe extern "C" fn(*mut c_void, usize) -> *const c_char;
+type FnHandle = unsafe extern "C" fn(*mut c_void);
+
+/// Funkcje C API MediaInfo w wariancie „A” (char*, z CharSet = UTF-8 — także na Windows).
+struct Lib {
+    _lib: libloading::Library,
+    new: FnNew,
+    open: FnOpen,
+    option: FnOption,
+    inform: FnInform,
+    close: FnHandle,
+    delete: FnHandle,
+}
+
+/// Nazwy biblioteki: najpierw obok programu (paczki), potem systemowa.
+fn candidates() -> Vec<std::path::PathBuf> {
+    let name = if cfg!(windows) { "MediaInfo.dll" } else { "libmediainfo.so.0" };
+    let mut v = vec![];
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        v.push(dir.join(name));
+        v.push(dir.join("../lib").join(name));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    v.push(name.into());
+    if !cfg!(windows) {
+        v.push("libmediainfo.so".into());
+    }
+    v
+}
+
+fn lib() -> Result<&'static Lib, String> {
+    static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
+    LIB.get_or_init(|| {
+        let mut last = String::new();
+        for c in candidates() {
+            // Ścieżka bez katalogu: wyszukiwanie systemowe (LD_LIBRARY_PATH, rpath, PATH na Windows).
+            if c.components().count() > 1 && !c.exists() {
+                continue;
+            }
+            match unsafe { libloading::Library::new(&c) } {
+                Ok(l) => unsafe {
+                    let sym = |n: &[u8]| -> Result<*const c_void, String> {
+                        l.get::<*const c_void>(n).map(|s| *s).map_err(|e| format!("{}: {e}", String::from_utf8_lossy(n)))
+                    };
+                    let f = (
+                        sym(b"MediaInfoA_New\0")?,
+                        sym(b"MediaInfoA_Open\0")?,
+                        sym(b"MediaInfoA_Option\0")?,
+                        sym(b"MediaInfoA_Inform\0")?,
+                        sym(b"MediaInfoA_Close\0")?,
+                        sym(b"MediaInfoA_Delete\0")?,
+                    );
+                    let lib = Lib {
+                        new: std::mem::transmute::<*const c_void, FnNew>(f.0),
+                        open: std::mem::transmute::<*const c_void, FnOpen>(f.1),
+                        option: std::mem::transmute::<*const c_void, FnOption>(f.2),
+                        inform: std::mem::transmute::<*const c_void, FnInform>(f.3),
+                        close: std::mem::transmute::<*const c_void, FnHandle>(f.4),
+                        delete: std::mem::transmute::<*const c_void, FnHandle>(f.5),
+                        _lib: l,
+                    };
+                    crate::log::file_line(&format!("[mediainfo] biblioteka: {}", c.display()));
+                    return Ok(lib);
+                },
+                Err(e) => last = format!("{e}"),
+            }
+        }
+        Err(format!("brak biblioteki MediaInfo ({}){}", candidates().last().map(|c| c.display().to_string()).unwrap_or_default(),
+            if last.is_empty() { String::new() } else { format!(": {last}") }))
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
+/// Raport MediaInfo dla pliku; `output`: "" = tekst jak `mediainfo plik`, "JSON" jak `--Output=JSON`.
+fn run(path: &Path, output: &str) -> Result<String, String> {
+    let l = lib()?;
+    let c = |x: &str| CString::new(x).map_err(|_| "niepoprawna nazwa pliku".to_string());
+    let file = c(&path.to_string_lossy())?;
+    unsafe {
+        let h = (l.new)();
+        if h.is_null() {
+            return Err("MediaInfo: nie można utworzyć obiektu".into());
+        }
+        let opt = |k: &str, v: &str| {
+            if let (Ok(k), Ok(v)) = (CString::new(k), CString::new(v)) {
+                (l.option)(h, k.as_ptr(), v.as_ptr());
+            }
+        };
+        opt("CharSet", "UTF-8");
+        opt("Output", output);
+        let ok = (l.open)(h, file.as_ptr()) != 0;
+        let text = if ok {
+            let p = (l.inform)(h, 0);
+            (!p.is_null()).then(|| CStr::from_ptr(p).to_string_lossy().into_owned())
+        } else {
+            None
+        };
+        (l.close)(h);
+        (l.delete)(h);
+        let text = text.ok_or_else(|| format!("MediaInfo nie otworzył pliku {}", path.display()))?;
+        if crate::log::full() {
+            crate::log::file_line(&format!("[mediainfo] {} ({}):\n{text}", path.display(), if output.is_empty() { "tekst" } else { output }));
+        }
+        Ok(text)
+    }
 }
 
 /// Pełny raport MediaInfo (ten sam tekst, co `mediainfo plik`).
 pub fn full(path: &Path) -> Result<String, String> {
-    run(&[path.as_os_str()])
+    run(path, "")
 }
 
 /// Skrócony raport do okienka F2.
 pub fn easy(path: &Path) -> Result<Vec<Section>, String> {
-    let json = run(&["--Output=JSON".as_ref(), path.as_os_str()])?;
+    let json = run(path, "JSON")?;
     let v: Value = serde_json::from_str(&json).map_err(|e| format!("niepoprawny JSON z mediainfo: {e}"))?;
     let tracks = v
         .pointer("/media/track")

@@ -41,9 +41,6 @@ fn summary(o: &Opts) -> String {
     if o.no_hdr10plus {
         p.push("bez HDR10+");
     }
-    if o.legacy_inject {
-        p.push("DV/HDR10+ przez pliki tymczasowe");
-    }
     if o.scale_1080 {
         p.push("skalowanie do 1080p");
     }
