@@ -365,6 +365,9 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
     cd "$WORK"
     rm -f VideoPipeline-*.AppImage
     # Najpierw samo wdrożenie bibliotek (bez obrazu) — potem przenosimy część z nich do usr/lib/hostfirst.
+    # libavformat/libavcodec/libavutil nie mają rpath — linuxdeploy szuka ich wzajemnych zależności
+    # przez LD_LIBRARY_PATH (inaczej: „Could not find dependency: libavcodec.so.63”).
+    LD_LIBRARY_PATH="$APPDIR/usr/lib:$LAVPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     "$BIN/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/videopipeline" \
