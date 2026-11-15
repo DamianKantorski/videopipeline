@@ -3,7 +3,7 @@
 | Składnik | Licencja | Źródło |
 |---|---|---|
 | VideoPipeline | GPL-3.0 | https://github.com/8brzrs26ws-cloud/videopipeline |
-| FFmpeg (ffmpeg, ffprobe; budowany z `--enable-gpl` — filtr hqdn3d jest na licencji GPL — bez `--enable-nonfree`; z ffnvcodec, NVENC/NVDEC, CUDA-LLVM, dav1d; Linux: VAAPI i libvpl, Windows: libvpl, D3D11VA, DXVA2) | GPL-2.0+ | https://ffmpeg.org/download.html |
+| FFmpeg (ffmpeg oraz biblioteki dynamiczne libavformat, libavcodec, libavutil; budowany z `--enable-gpl` — filtr hqdn3d jest na licencji GPL — bez `--enable-nonfree`; z ffnvcodec, NVENC/NVDEC, CUDA-LLVM, dav1d; Linux: VAAPI i libvpl, Windows: libvpl, D3D11VA, DXVA2) | GPL-2.0+ | https://ffmpeg.org/download.html |
 | nv-codec-headers (statycznie, tylko nagłówki) | MIT | https://github.com/FFmpeg/nv-codec-headers |
 | libva, libdrm (Linux; dynamicznie — kopie w AppImage używane tylko, gdy brak ich w systemie) | MIT | https://github.com/intel/libva |
 | libvpl / oneVPL dispatcher (Linux: dynamicznie, Windows: statycznie w ffmpeg.exe) | MIT | https://github.com/intel/libvpl |

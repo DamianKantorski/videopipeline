@@ -5,7 +5,7 @@ FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential nasm yasm pkg-config clang llvm lld patchelf file wget curl git \
+        build-essential nasm yasm pkg-config clang libclang-dev llvm lld patchelf file wget curl git \
         ca-certificates xz-utils zstd dpkg-dev fakeroot desktop-file-utils squashfs-tools \
         mkvtoolnix mediainfo libdav1d-dev zlib1g-dev libmagic-mgc \
         libva-dev libdrm-dev libvpl-dev ocl-icd-opencl-dev opencl-c-headers autoconf automake libtool \

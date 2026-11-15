@@ -282,7 +282,7 @@ pub fn analyze(opts: &Opts, input: &Path, panel: &mut Panel) -> Result<Analysis>
     let stem = input.file_stem().unwrap().to_string_lossy().to_string();
     let p = opts.paths_for(input);
 
-    panel.draw_analysis(&filename, 8.0, "AUDIO / NAPISY", "Odczytuję ścieżki przez ffprobe");
+    panel.draw_analysis(&filename, 8.0, "AUDIO / NAPISY", "Odczytuję ścieżki audio i napisów");
     let media = probe::probe(input)?;
 
     let mut pol_audio: Option<u32> = None;

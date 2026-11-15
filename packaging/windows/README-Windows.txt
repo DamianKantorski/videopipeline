@@ -5,7 +5,7 @@ Uruchamianie
   Rozpakuj cały folder w dowolnym miejscu i uruchom videopipeline.exe
   (dwuklik otwiera okno konsoli). Najlepiej wygląda w Windows Terminal.
   Wszystkie pliki muszą zostać w jednym folderze: program używa dołączonych
-  ffmpeg.exe, ffprobe.exe, mkvmerge.exe, MediaInfo.exe, dovi_tool.exe,
+  ffmpeg.exe, avformat/avcodec/avutil-*.dll, mkvmerge.exe, MediaInfo.exe, dovi_tool.exe,
   hdr10plus_tool.exe, mpv.exe (odtwarzanie pod F3) i videopipeline-term.exe (okno programu).
 
   Tryb skryptowy (PowerShell / cmd):

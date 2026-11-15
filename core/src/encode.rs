@@ -606,8 +606,8 @@ fn result_check(opts: &Opts, out: &Path, pf: &Path) -> Result<(), String> {
     let (codec, err) = probe::video_codec_diag(out);
     match codec.as_deref() {
         Some(c) if c == opts.codec.name() => Ok(()),
-        Some(c) => Err(format!("ffprobe: kodek wideo {c}, oczekiwany {}", opts.codec.name())),
-        None => Err(format!("ffprobe nie odczytał wideo z pliku{}", if err.is_empty() { String::new() } else { format!(": {err}") })),
+        Some(c) => Err(format!("kodek wideo wyniku {c}, oczekiwany {}", opts.codec.name())),
+        None => Err(format!("nie udało się odczytać wideo z pliku{}", if err.is_empty() { String::new() } else { format!(": {err}") })),
     }
 }
 
@@ -657,7 +657,7 @@ fn start(
     let fps = if live {
         let fps = probe::video_fps(&a.input_file).as_deref().and_then(parse_fps);
         if fps.is_none() {
-            return Err(std::io::Error::other("nie można odczytać liczby klatek na sekundę źródła (ffprobe)"));
+            return Err(std::io::Error::other("nie można odczytać liczby klatek na sekundę źródła"));
         }
         fps
     } else {

@@ -145,6 +145,8 @@ pub(crate) fn meta_args(opts: &Opts, a: &Analysis, src: usize) -> Vec<String> {
     let tags = probe::format_tags(&a.input_file);
     for key in ["title", "creation_time"] {
         if let Some(val) = tags.get(key) {
+            // FFmpeg 9 skleja powtórzone znaczniki MOV średnikiem („…000000Z;…Z”) — wystarczy pierwszy.
+            let val = if key == "creation_time" { val.split(';').next().unwrap_or(val) } else { val };
             v.extend(["-metadata".into(), format!("{key}={val}")]);
         }
     }
@@ -351,7 +353,7 @@ fn mux_mp4(opts: &Opts, a: &Analysis, p: &Paths, video: &Path, dynamic_hdr: bool
     let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y"].map(String::from).to_vec();
     if raw_hevc {
         let Some(fps) = probe::video_fps(&a.input_file) else {
-            bail!("nie można odczytać liczby klatek na sekundę ze źródła (ffprobe)");
+            bail!("nie można odczytać liczby klatek na sekundę ze źródła");
         };
         args.extend(["-framerate".into(), fps, "-f".into(), "hevc".into()]);
     }

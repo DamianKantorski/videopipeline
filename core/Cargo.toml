@@ -19,3 +19,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # Dolby Vision RPU i HDR10+ (biblioteki z dovi_tool / hdr10plus_tool) — wstrzykiwanie w locie.
 dolby_vision = "3.4"
 hdr10plus = { version = "2.1", features = ["hevc", "json"] }
+# Odczyt plików przez libavformat / libavcodec (biblioteki dynamiczne FFmpeg) zamiast ffprobe.
+ffmpeg-next = { version = "9.1", default-features = false, features = ["format", "codec"], optional = true }
+
+[features]
+# Paczki budują z „libav”; bez niej (np. szybki build deweloperski bez nagłówków FFmpeg) — ffprobe.
+libav = ["dep:ffmpeg-next"]

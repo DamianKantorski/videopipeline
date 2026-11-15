@@ -1,37 +1,189 @@
-use crate::log::LoggedOutput;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
 
-#[derive(Deserialize, Default)]
-struct ProbeJson {
-    #[serde(default)]
-    streams: Vec<StreamJson>,
-    format: Option<FormatJson>,
+/// Opis pliku: strumienie, długość, znaczniki globalne. Z libavformat (funkcja `libav`) albo z jednego
+/// wywołania ffprobe — w obu przypadkach nazwy jak w ffprobe.
+#[derive(Clone, Debug, Default)]
+pub struct Info {
+    pub streams: Vec<StreamInfo>,
+    pub duration: Option<f64>,
+    pub tags: HashMap<String, String>,
 }
 
-#[derive(Deserialize, Default)]
-struct StreamJson {
-    index: u32,
-    codec_type: Option<String>,
-    codec_name: Option<String>,
-    channels: Option<u32>,
-    pix_fmt: Option<String>,
-    bits_per_raw_sample: Option<String>,
-    color_range: Option<String>,
-    color_space: Option<String>,
-    color_transfer: Option<String>,
-    color_primaries: Option<String>,
-    width: Option<u32>,
-    #[serde(default)]
-    tags: HashMap<String, String>,
-    #[serde(default)]
-    disposition: HashMap<String, i64>,
+#[derive(Clone, Debug, Default)]
+pub struct StreamInfo {
+    pub index: u32,
+    /// "video" / "audio" / "subtitle" / "data" / "attachment"
+    pub kind: String,
+    /// Nazwa kodeka jak w ffprobe ("hevc", "pcm_s16le", "apple_apac"); pusta dla danych bez kodeka.
+    pub codec: String,
+    pub channels: u32,
+    pub pix_fmt: String,
+    pub bits_per_raw_sample: String,
+    pub color_range: String,
+    pub color_space: String,
+    pub color_transfer: String,
+    pub color_primaries: String,
+    pub width: u32,
+    pub height: u32,
+    /// np. "24000/1001"
+    pub r_frame_rate: String,
+    pub tags: HashMap<String, String>,
+    /// Ścieżka oznaczona jako domyślna.
+    pub default: bool,
 }
 
-/// Czy ffmpeg z paczki umie zdekodować kodek (lista z `ffmpeg -codecs`, zapamiętana). Np. dźwięk
-/// przestrzenny z iPhone'a (apple_apac) nie ma dekodera — takiej ścieżki nie da się przekodować.
-/// Gdy listy nie da się odczytać, zakładamy, że tak.
+impl Info {
+    pub fn first_video(&self) -> Option<&StreamInfo> {
+        self.streams.iter().find(|s| s.kind == "video")
+    }
+}
+
+/// Odczyt jednym wywołaniem ffprobe (JSON) — gdy program zbudowano bez bibliotek FFmpeg.
+#[cfg(not(feature = "libav"))]
+mod via_ffprobe {
+    use super::{Info, StreamInfo};
+    use crate::log::LoggedOutput;
+    use anyhow::{bail, Context, Result};
+    use serde::Deserialize;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    #[derive(Deserialize, Default)]
+    struct ProbeJson {
+        #[serde(default)]
+        streams: Vec<StreamJson>,
+        format: Option<FormatJson>,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct StreamJson {
+        index: u32,
+        codec_type: Option<String>,
+        codec_name: Option<String>,
+        channels: Option<u32>,
+        pix_fmt: Option<String>,
+        bits_per_raw_sample: Option<String>,
+        color_range: Option<String>,
+        color_space: Option<String>,
+        color_transfer: Option<String>,
+        color_primaries: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+        r_frame_rate: Option<String>,
+        #[serde(default)]
+        tags: HashMap<String, String>,
+        #[serde(default)]
+        disposition: HashMap<String, i64>,
+    }
+
+    #[derive(Deserialize, Default)]
+    struct FormatJson {
+        duration: Option<String>,
+        #[serde(default)]
+        tags: HashMap<String, String>,
+    }
+
+    /// Odczyt przez ffprobe (gdy program zbudowano bez bibliotek FFmpeg).
+    pub(super) fn inspect_backend(path: &Path) -> Result<Info> {
+        let out = crate::proc::command("ffprobe")
+            .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .logged_output()
+            .context("nie można uruchomić ffprobe")?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).lines().take(3).collect::<Vec<_>>().join(" | ");
+            bail!("ffprobe: {}", if err.is_empty() { out.status.to_string() } else { err });
+        }
+        let j: ProbeJson = serde_json::from_slice(&out.stdout).context("zły JSON z ffprobe")?;
+        let g = |o: &Option<String>| o.clone().unwrap_or_default();
+        let streams = j
+            .streams
+            .into_iter()
+            .map(|s| StreamInfo {
+                index: s.index,
+                kind: g(&s.codec_type),
+                codec: g(&s.codec_name),
+                channels: s.channels.unwrap_or(0),
+                pix_fmt: g(&s.pix_fmt),
+                bits_per_raw_sample: g(&s.bits_per_raw_sample),
+                color_range: g(&s.color_range),
+                color_space: g(&s.color_space),
+                color_transfer: g(&s.color_transfer),
+                color_primaries: g(&s.color_primaries),
+                width: s.width.unwrap_or(0),
+                height: s.height.unwrap_or(0),
+                r_frame_rate: g(&s.r_frame_rate),
+                default: s.disposition.get("default").copied().unwrap_or(0) == 1,
+                tags: s.tags,
+            })
+            .collect();
+        let (duration, tags) = match j.format {
+            Some(f) => (f.duration.and_then(|d| d.parse::<f64>().ok()), f.tags),
+            None => (None, HashMap::new()),
+        };
+        Ok(Info { streams, duration, tags })
+    }
+}
+#[cfg(not(feature = "libav"))]
+use via_ffprobe::inspect_backend;
+
+#[cfg(feature = "libav")]
+fn inspect_backend(path: &Path) -> Result<Info> {
+    let r = crate::libav::inspect(path);
+    if crate::log::full() {
+        match &r {
+            Ok(i) => crate::log::file_line(&format!(
+                "[libav] {} — {} strumieni, długość {:?} s\n{:#?}",
+                path.display(),
+                i.streams.len(),
+                i.duration,
+                i
+            )),
+            Err(e) => crate::log::file_line(&format!("[libav] {} — BŁĄD: {e:#}", path.display())),
+        }
+    }
+    r
+}
+
+/// Opis pliku bez pamięci podręcznej (np. plik wynikowy tuż po zapisie).
+pub fn inspect_fresh(path: &Path) -> Result<Info> {
+    inspect_backend(path)
+}
+
+/// Opis pliku, zapamiętany dla (ścieżka, rozmiar, czas zmiany) — zmieniony plik jest czytany na nowo.
+pub fn inspect(path: &Path) -> Result<Info> {
+    use std::sync::Mutex;
+    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+    static CACHE: Mutex<Option<HashMap<Key, Info>>> = Mutex::new(None);
+    let meta = std::fs::metadata(path).ok();
+    let key: Key = (path.to_path_buf(), meta.as_ref().map_or(0, |m| m.len()), meta.and_then(|m| m.modified().ok()));
+    if let Some(i) = CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&key).cloned())) {
+        return Ok(i);
+    }
+    let info = inspect_backend(path)?;
+    if let Ok(mut g) = CACHE.lock() {
+        let m = g.get_or_insert_with(HashMap::new);
+        if m.len() > 512 {
+            m.clear();
+        }
+        m.insert(key, info.clone());
+    }
+    Ok(info)
+}
+
+/// Czy ffmpeg z paczki umie zdekodować kodek. Np. dźwięk przestrzenny z iPhone'a (apple_apac) nie ma
+/// dekodera — takiej ścieżki nie da się przekodować.
+#[cfg(feature = "libav")]
+pub fn decodable(codec: &str) -> bool {
+    codec.is_empty() || crate::libav::decodable(codec)
+}
+
+/// Czy ffmpeg z paczki umie zdekodować kodek (lista z `ffmpeg -codecs`, zapamiętana). Gdy listy nie da
+/// się odczytać, zakładamy, że tak.
+#[cfg(not(feature = "libav"))]
 pub fn decodable(codec: &str) -> bool {
     use std::sync::OnceLock;
     static SET: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
@@ -55,9 +207,16 @@ pub fn decodable(codec: &str) -> bool {
     codec.is_empty() || set.is_empty() || set.contains(codec)
 }
 
-#[derive(Deserialize, Default)]
-struct FormatJson {
-    duration: Option<String>,
+/// Źródło odczytu informacji o plikach (do logu przed startem).
+pub fn backend() -> String {
+    #[cfg(feature = "libav")]
+    {
+        format!("biblioteki FFmpeg ({})", crate::libav::versions())
+    }
+    #[cfg(not(feature = "libav"))]
+    {
+        "ffprobe".to_string()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -101,15 +260,14 @@ fn known(s: &str) -> bool {
     !s.is_empty() && s != "unknown" && s != "unspecified"
 }
 
-fn color_from(s: &StreamJson) -> ColorProfile {
-    let g = |o: &Option<String>| o.clone().unwrap_or_default();
+fn color_from(s: &StreamInfo) -> ColorProfile {
     let mut c = ColorProfile {
-        pix_fmt: g(&s.pix_fmt),
-        bits_per_raw_sample: g(&s.bits_per_raw_sample),
-        primaries: g(&s.color_primaries),
-        trc: g(&s.color_transfer),
-        space: g(&s.color_space),
-        range: g(&s.color_range),
+        pix_fmt: s.pix_fmt.clone(),
+        bits_per_raw_sample: s.bits_per_raw_sample.clone(),
+        primaries: s.color_primaries.clone(),
+        trc: s.color_transfer.clone(),
+        space: s.color_space.clone(),
+        range: s.color_range.clone(),
         sdr_primaries: "bt709".into(),
         sdr_trc: "bt709".into(),
         sdr_space: "bt709".into(),
@@ -139,109 +297,44 @@ fn color_from(s: &StreamJson) -> ColorProfile {
 }
 
 pub fn probe(input: &Path) -> Result<Media> {
-    let out = crate::proc::command("ffprobe")
-        .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
-        .arg(input)
-        .logged_output()
-        .context("nie można uruchomić ffprobe")?;
-    if !out.status.success() {
-        bail!("ffprobe zakończył się błędem dla {}", input.display());
-    }
-    let j: ProbeJson = serde_json::from_slice(&out.stdout).context("zły JSON z ffprobe")?;
-    let lang = |s: &StreamJson| s.tags.get("language").cloned().unwrap_or_default();
+    let info = inspect(input).with_context(|| format!("odczyt {}", input.display()))?;
+    let lang = |s: &StreamInfo| s.tags.get("language").cloned().unwrap_or_default();
 
     // Ścieżki audio, które ffmpeg potrafi odczytać; najpierw oznaczona jako domyślna (iPhone: APAC
     // z dźwiękiem przestrzennym jest pierwsza, ale bez dekodera i nie domyślna — domyślne jest PCM).
-    let mut audio_streams: Vec<&StreamJson> = j.streams.iter().filter(|s| s.codec_type.as_deref() == Some("audio")).collect();
+    let mut audio_streams: Vec<&StreamInfo> = info.streams.iter().filter(|s| s.kind == "audio").collect();
     audio_streams.retain(|s| {
-        let c = s.codec_name.clone().unwrap_or_default();
-        let ok = decodable(&c);
+        let ok = decodable(&s.codec);
         if !ok {
-            plog!("    audio {} ({c}) pominięte — ffmpeg nie ma dekodera tego kodeka", s.index);
+            plog!("    audio {} ({}) pominięte — ffmpeg nie ma dekodera tego kodeka", s.index, s.codec);
         }
         ok
     });
-    audio_streams.sort_by_key(|s| if s.disposition.get("default").copied().unwrap_or(0) == 1 { 0 } else { 1 });
+    audio_streams.sort_by_key(|s| if s.default { 0 } else { 1 });
     let audio = audio_streams.iter().map(|s| (s.index, lang(s))).collect();
-    let subs = j
-        .streams
-        .iter()
-        .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
-        .map(|s| (s.index, lang(s)))
-        .collect();
-    let video = j.streams.iter().find(|s| s.codec_type.as_deref() == Some("video"));
+    let subs = info.streams.iter().filter(|s| s.kind == "subtitle").map(|s| (s.index, lang(s))).collect();
+    let video = info.first_video();
 
     Ok(Media {
         audio,
         subs,
-        width: video.and_then(|v| v.width),
-        duration: j
-            .format
-            .and_then(|f| f.duration)
-            .and_then(|d| d.parse::<f64>().ok()),
+        width: video.map(|v| v.width).filter(|w| *w > 0),
+        duration: info.duration,
         color: video.map(color_from).unwrap_or_default(),
     })
 }
 
-/// Kodek i liczba kanałów każdego strumienia (indeks ffprobe → (kodek, kanały; 0 dla nie-audio)).
+/// Kodek i liczba kanałów każdego strumienia (indeks → (kodek, kanały; 0 dla nie-audio)).
 /// Do wyboru: kopiować strumień do kontenera czy przekodować (MP4 nie przyjmie np. DTS ani napisów PGS).
 pub fn stream_codecs(input: &Path) -> HashMap<u32, (String, u32)> {
-    let Ok(out) = crate::proc::command("ffprobe")
-        .args(["-v", "error", "-show_streams", "-of", "json"])
-        .arg(input)
-        .stdin(std::process::Stdio::null())
-        .logged_output()
-    else {
-        return HashMap::new();
-    };
-    let j: ProbeJson = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    j.streams
-        .iter()
-        .map(|s| (s.index, (s.codec_name.clone().unwrap_or_default(), s.channels.unwrap_or(0))))
-        .collect()
+    inspect(input)
+        .map(|i| i.streams.iter().map(|s| (s.index, (s.codec.clone(), s.channels))).collect())
+        .unwrap_or_default()
 }
 
-/// Wartości z ffprobe, po jednej na linię. ffprobe 9 potrafi wypisać ten sam strumień więcej niż raz
-/// (np. także w grupie strumieni / programie) — wołający biorą pierwsze wartości, nie cały tekst.
-fn probe_lines(path: &Path, args: &[&str]) -> Vec<String> {
-    let Ok(out) = crate::proc::command("ffprobe")
-        .args(["-v", "error"])
-        .args(args)
-        .args(["-of", "default=noprint_wrappers=1:nokey=1"])
-        .arg(path)
-        .logged_output()
-    else {
-        return vec![];
-    };
-    String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
-}
-
-/// Pierwsza wartość z ffprobe (zapytanie o jedno pole).
-fn probe_value(path: &Path, args: &[&str]) -> Option<String> {
-    probe_lines(path, args).into_iter().next()
-}
-
-/// Znaczniki globalne pliku (format tags), zapamiętane — kontener „jak źródło” pyta o nie wielokrotnie.
+/// Znaczniki globalne pliku (format tags).
 pub fn format_tags(path: &Path) -> HashMap<String, String> {
-    use std::sync::Mutex;
-    static CACHE: Mutex<Option<HashMap<std::path::PathBuf, HashMap<String, String>>>> = Mutex::new(None);
-    if let Some(t) = CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(path).cloned())) {
-        return t;
-    }
-    let tags: HashMap<String, String> = crate::proc::command("ffprobe")
-        .args(["-v", "error", "-show_entries", "format_tags", "-of", "json"])
-        .arg(path)
-        .stdin(std::process::Stdio::null())
-        .logged_output()
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| v.get("format")?.get("tags")?.as_object().cloned())
-        .map(|m| m.into_iter().filter_map(|(k, v)| Some((k, v.as_str()?.to_string()))).collect())
-        .unwrap_or_default();
-    if let Ok(mut g) = CACHE.lock() {
-        g.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), tags.clone());
-    }
-    tags
+    inspect(path).map(|i| i.tags).unwrap_or_default()
 }
 
 /// Nagranie z iPhone'a / iPada (znaczniki QuickTime z aparatu Apple).
@@ -251,40 +344,35 @@ pub fn is_apple_device(path: &Path) -> bool {
         || t.get("com.apple.quicktime.model").is_some_and(|m| m.starts_with("iPhone") || m.starts_with("iPad"))
 }
 
-/// Jak video_codec, ale z komunikatem ffprobe (stderr) — do diagnostyki odrzuconych plików.
+/// Kodek pierwszego strumienia wideo z komunikatem błędu — do sprawdzenia pliku wynikowego.
 pub fn video_codec_diag(path: &Path) -> (Option<String>, String) {
-    let out = crate::proc::command("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name"])
-        .args(["-of", "default=noprint_wrappers=1:nokey=1"])
-        .arg(path)
-        .logged_output();
-    match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout).lines().map(str::trim).find(|l| !l.is_empty()).map(String::from);
-            let e = String::from_utf8_lossy(&o.stderr).lines().take(3).collect::<Vec<_>>().join(" | ");
-            (s, if e.is_empty() && !o.status.success() { format!("ffprobe {}", o.status) } else { e })
-        }
-        Err(e) => (None, format!("nie można uruchomić ffprobe: {e}")),
+    match inspect_fresh(path) {
+        Ok(i) => match i.first_video().map(|v| v.codec.clone()).filter(|c| !c.is_empty()) {
+            Some(c) => (Some(c), String::new()),
+            None => (None, "brak strumienia wideo".into()),
+        },
+        Err(e) => (None, format!("{e:#}")),
     }
 }
 
 pub fn video_codec(path: &Path) -> Option<String> {
-    probe_value(path, &["-select_streams", "v:0", "-show_entries", "stream=codec_name"])
+    video_codec_diag(path).0
 }
 
 /// Liczba klatek na sekundę pierwszego strumienia wideo, np. "24000/1001".
 pub fn video_fps(path: &Path) -> Option<String> {
-    let s = probe_value(path, &["-select_streams", "v:0", "-show_entries", "stream=r_frame_rate"])?;
-    (s != "0/0").then_some(s)
+    let i = inspect(path).ok()?;
+    let r = i.first_video()?.r_frame_rate.clone();
+    (!r.is_empty() && r != "0/0" && !r.ends_with("/0")).then_some(r)
 }
 
 /// Wymiary pierwszego strumienia wideo (w pikselach kodowanych).
 pub fn video_size(path: &Path) -> Option<(u32, u32)> {
-    let s = probe_lines(path, &["-select_streams", "v:0", "-show_entries", "stream=width,height"]);
-    let mut it = s.iter().filter_map(|l| l.parse::<u32>().ok());
-    Some((it.next()?, it.next()?)).filter(|(w, h)| *w > 0 && *h > 0)
+    let i = inspect(path).ok()?;
+    let v = i.first_video()?;
+    (v.width > 0 && v.height > 0).then_some((v.width, v.height))
 }
 
 pub fn container_duration(path: &Path) -> Option<f64> {
-    probe_value(path, &["-show_entries", "format=duration"])?.parse().ok()
+    inspect(path).ok()?.duration
 }

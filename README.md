@@ -39,7 +39,8 @@ Wystarczy jedna karta. Gdy w komputerze są obie, domyślnie koduje NVIDIA, a In
 ## Instalacja
 
 Gotowe pliki są na stronie [Releases](https://github.com/8brzrs26ws-cloud/videopipeline/releases). Każdy wariant zawiera
-własne ffmpeg i ffprobe (NVENC i QSV; na Linuksie także VAAPI), mkvmerge, MediaInfo, dovi_tool i hdr10plus_tool; sterowniki GPU
+własne ffmpeg (NVENC i QSV; na Linuksie także VAAPI) i biblioteki FFmpeg (libavformat, libavcodec, libavutil — przez nie
+program czyta informacje o plikach, bez uruchamiania ffprobe), mkvmerge, MediaInfo, dovi_tool i hdr10plus_tool; sterowniki GPU
 pochodzą z systemu.
 
 **AppImage** (dowolna dystrybucja spełniająca wymagania):
@@ -187,7 +188,7 @@ Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecno�
 | `--1080p` | zmniejszenie obrazu do 1920×1080 z zachowaniem proporcji (po kadrowaniu, np. 3840×1600 → 1920×800); mniejsze źródła bez zmian. NVIDIA: na CPU (Lanczos) przed NVENC, Intel: `vpp_qsv` / `scale_vaapi` na karcie. Obszar aktywny Dolby Vision (L5) jest przeliczany. Nazwa wyniku dostaje `_1080p` |
 | `--audio auto\|copy\|aac\|alac\|flac\|ac3` | kodek ścieżek audio (także w F7, zaraz pod kodekiem wideo). `auto` (domyślnie, „jak źródło”): kopia; PCM → FLAC w MKV / AAC w MP4; nagrania z iPhone'a / iPada → AAC; do MP4 kodeki spoza MP4 (DTS, TrueHD) → E-AC-3 640k. `aac`: wbudowany koder ffmpeg, CBR 160 kb/s na kanał (stereo 320k, 5.1 960k). `alac` / `flac`: bezstratnie, 16 albo 24 bity jak źródło. `ac3`: Dolby Digital 640k (stereo 448k) — np. PS4 z AVC. Ścieżka już w wybranym kodeku jest kopiowana |
 | `--strip-meta` | bez lokalizacji (GPS) i danych urządzenia (marka, model, wersja oprogramowania, znaczniki aplikacji) w pliku wynikowym; zostaje tytuł i data nagrania. Także w F7 |
-| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg, ffprobe, dovi_tool, hdr10plus_tool, mkvmerge, mediainfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
+| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg, dovi_tool, hdr10plus_tool, mkvmerge, mediainfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
 | `--legacy-inject` | Dolby Vision / HDR10+ starą ścieżką: plik tymczasowy `.hevc`, dovi_tool / hdr10plus_tool i mkvmerge (domyślnie w locie, bez plików pośrednich) |
 | `-pdv`, `-ph` | bez Dolby Vision / bez HDR10+ |
 | `-c` | kopia wyniku do `<katalog źródła>/encoded` z weryfikacją SHA-512 |
@@ -283,8 +284,14 @@ mkvmerge (mkvtoolnix), mediainfo, mpv (opcjonalnie, dla F3), [dovi_tool](https:/
 
     ./install-build-deps.sh --dev   # raz: Rust (rustup), ffmpeg, mkvtoolnix, mediainfo, mpv (Arch, Debian)
     ./build.sh       # target/release/videopipeline + libvideopipeline_core.so
+    FFMPEG_DIR=/ścieżka/do/ffmpeg ./build.sh --features videopipeline/libav   # opcjonalnie, jak w paczkach
     ./install.sh     # opcjonalnie: ~/.local/bin (z biblioteką libstd Rusta), ikona i wpis w menu
     ./uninstall.sh   # usuwa to, co zainstalował install.sh
+
+Bez funkcji `libav` informacje o plikach (strumienie, kolory, długość, znaczniki) czyta ffprobe z `PATH`. Z nią —
+biblioteki dynamiczne FFmpeg (sprawdzone z 9.x; libavformat, libavcodec, libavutil z nagłówkami; `FFMPEG_DIR` albo
+pkg-config; do kompilacji potrzebny libclang), a ffprobe nie jest potrzebny. Paczki są budowane z `libav`: biblioteki
+zawierają tylko demuxery, parsery i dekodery, kodowanie nadal robi dołączony statyczny ffmpeg.
 
 Program to biblioteka z całą logiką (`core/`) i binarka z interfejsem (`app/`). Oba pliki muszą pochodzić z jednego builda
 i leżeć w tym samym katalogu (albo binarka w `bin/`, biblioteka w `../lib/`).

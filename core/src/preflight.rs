@@ -131,6 +131,7 @@ pub fn run(opts: &Opts) -> Result<Runtime> {
         vulkan_dev: String::new(),
     };
 
+    plog!("Odczyt informacji o plikach: {}.", crate::probe::backend());
     plog!(
         "Kopiowanie -c: {}",
         if opts.copy {

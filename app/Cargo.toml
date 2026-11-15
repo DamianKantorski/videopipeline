@@ -19,3 +19,7 @@ ratatui = "0.29"
 # statvfs (wolne miejsce zamontowanych dysków w lewym panelu)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# Odczyt plików przez biblioteki FFmpeg (libavformat) zamiast ffprobe.
+libav = ["videopipeline-core/libav"]

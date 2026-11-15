@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Kroskompilacja wersji Windows x64 (x86_64-pc-windows-gnu, MinGW-w64) w kontenerze Debian 13:
 #   dist/VideoPipeline-<wersja>-windows-x86_64_v3.zip (+ .sha256)
-# Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, ffmpeg.exe i ffprobe.exe
+# Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, avformat/avcodec/avutil-*.dll (odczyt
+# informacji o plikach), ffmpeg.exe
 # (statyczne: NVENC/NVDEC/CUDA-LLVM, Intel QSV przez oneVPL + D3D11, dav1d, zlib), mkvmerge.exe
 # (oficjalna wersja przenośna MKVToolNix), MediaInfo.exe (oficjalne CLI MediaArea), dovi_tool.exe, hdr10plus_tool.exe.
 # Sterowniki GPU (NVIDIA, Intel) pochodzą z systemu Windows.
@@ -149,10 +150,28 @@ echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, MKVT
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 
 # ------------------------------------------------------------------ 1. aplikacja
-log "1/6 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU)"
+# Biblioteki dynamiczne FFmpeg (avformat-*.dll, avcodec-*.dll, avutil-*.dll) do odczytu informacji
+# o plikach zamiast ffprobe.exe — przed kompilacją programu (funkcja `libav`).
+LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
+if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
+    log "1/6 biblioteki FFmpeg $FFMPEG_VERSION (DLL: avformat, avcodec, avutil)"
+    # -static: libgcc, winpthread i zlib wkompilowane — DLL zależą tylko od systemu i od siebie.
+    libav_build "$FFMPEG_VERSION" "$WORK" "$BUILD/work" "$LAVPREFIX" \
+        --target-os=mingw32 --arch=x86_64 --cross-prefix="$TRIPLE-" --cc="$CC_W" --cxx="$CXX_W" \
+        --pkg-config=pkg-config --extra-cflags="-march=$TARGET_CPU -O2" --extra-ldflags="-static" \
+        || fail "budowanie bibliotek FFmpeg (DLL) nie powiodło się"
+fi
+log "1/6 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU, informacje o plikach przez libavformat)"
 # RUSTFLAGS zastępuje .cargo/config.toml — prefer-dynamic podajemy jawnie (biblioteka core jako DLL).
 # app/build.rs wkompilowuje ikonę i informacje o wersji przez windres.
-WINDRES="$TRIPLE-windres" RUSTFLAGS="-C prefer-dynamic -C target-cpu=$TARGET_CPU" cargo build --release --target "$RTARGET"
+# ffmpeg-sys-next: nagłówki i biblioteki importu z FFMPEG_DIR; bindgen (clang) z nagłówkami MinGW.
+# Nagłówki MinGW wciągają wszystkie intrinsics clanga, a typów AMX (__tile1024i, align 64 w strukturze
+# packed) bindgen nie umie przełożyć na Rusta — pomijamy te nagłówki przez ich strażniki #define.
+AMX_SKIP="$(for h in "$(clang -print-resource-dir)"/include/amx*.h; do
+    sed -nE 's/^#define (__AMX[A-Z0-9_]*_H)\b.*/-D\1/p' "$h" | head -n1; done | tr '\n' ' ')"
+FFMPEG_DIR="$LAVPREFIX" BINDGEN_EXTRA_CLANG_ARGS="--target=$RTARGET --sysroot=/usr/$TRIPLE $AMX_SKIP" \
+    WINDRES="$TRIPLE-windres" RUSTFLAGS="-C prefer-dynamic -C target-cpu=$TARGET_CPU" \
+    cargo build --release --target "$RTARGET" --features videopipeline/libav
 OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
 [[ -f "$OUT/videopipeline.exe" && -f "$OUT/videopipeline_core.dll" ]] || fail "brak videopipeline.exe / videopipeline_core.dll"
 STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
@@ -467,7 +486,8 @@ fi
 log "6/6 składanie $PKGNAME.zip"
 rm -rf "$PKG" && mkdir -p "$PKG"
 cp "$OUT/videopipeline.exe" "$OUT/videopipeline_core.dll" "$STD_DLL" "$PKG/"
-cp "$FFPREFIX/bin/ffmpeg.exe" "$FFPREFIX/bin/ffprobe.exe" "$PKG/"
+cp "$LAVPREFIX"/bin/{avformat,avcodec,avutil}-*.dll "$PKG/"
+cp "$FFPREFIX/bin/ffmpeg.exe" "$PKG/"   # ffprobe.exe niepotrzebny — odczyt plików przez avformat-*.dll
 cp "$TOOLS/bin/dovi_tool.exe" "$TOOLS/bin/hdr10plus_tool.exe" "$PKG/"
 cp "$MKV/mkvtoolnix/mkvmerge.exe" "$PKG/"
 # MediaInfo.exe (+ jego biblioteki DLL, jeśli są w paczce CLI); Windows nie rozróżnia wielkości liter,
@@ -488,7 +508,7 @@ for d in "$MPVW"/*.dll; do
 done
 # Dane mkvmerge (baza typów plików itp.), jeśli są w wersji przenośnej.
 [[ -d "$MKV/mkvtoolnix/data" ]] && cp -r "$MKV/mkvtoolnix/data" "$PKG/"
-"$TRIPLE-strip" "$PKG/ffmpeg.exe" "$PKG/ffprobe.exe" "$PKG/dovi_tool.exe" "$PKG/hdr10plus_tool.exe" 2>/dev/null || true
+"$TRIPLE-strip" "$PKG/ffmpeg.exe" "$PKG"/av{format,codec,util}-*.dll "$PKG/dovi_tool.exe" "$PKG/hdr10plus_tool.exe" 2>/dev/null || true
 
 # Ikona w zasobach videopipeline.exe (sekcja .rsrc z app/build.rs).
 "$TRIPLE-objdump" -h "$PKG/videopipeline.exe" | grep '\.rsrc' >/dev/null || fail "videopipeline.exe bez zasobów (ikony) — sprawdź windres"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Buduje dist/VideoPipeline-<wersja>-x86_64_v3.AppImage z dołączonymi narzędziami:
-#   ffmpeg + ffprobe (NVENC/NVDEC/CUDA-LLVM statycznie; Intel QSV/VAAPI z libva/libvpl linkowanymi dynamicznie),
+#   ffmpeg (NVENC/NVDEC/CUDA-LLVM statycznie; Intel QSV/VAAPI z libva/libvpl linkowanymi dynamicznie),
+#   biblioteki dynamiczne libavformat/libavcodec/libavutil (odczyt informacji o plikach zamiast ffprobe),
 #   mkvmerge, mediainfo, dovi_tool, hdr10plus_tool oraz odtwarzacz mpv (F3, budowany ze źródeł; MPV_VERSION)
 #   i terminal videopipeline-term (Alacritty ze źródeł z ikoną VideoPipeline; ALACRITTY_VERSION).
 # Kod własny (videopipeline, biblioteka core, dovi_tool, hdr10plus_tool, ffmpeg) jest kompilowany
@@ -64,8 +65,18 @@ for c in cargo rustc gcc clang make nasm pkg-config git wget patchelf mkvmerge m
 pkg-config --exists dav1d || fail "brak libdav1d-dev (pkg-config dav1d)"
 
 # --------------------------------------------------------------------------- 1. aplikacja
-log "1/5 videopipeline + biblioteka core ($TARGET_CPU)"
-VP_RUSTFLAGS_EXTRA="-C target-cpu=$TARGET_CPU" bash ./build.sh
+# Biblioteki dynamiczne FFmpeg do odczytu informacji o plikach (zamiast ffprobe) — muszą być przed
+# kompilacją programu (funkcja `libav`, ffmpeg-sys-next czyta nagłówki i linkuje z nimi).
+LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
+if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
+    log "1/5 biblioteki FFmpeg $FFMPEG_VERSION (dynamiczne: libavformat, libavcodec, libavutil)"
+    libav_build "$FFMPEG_VERSION" "$WORK" "$WORK" "$LAVPREFIX" --libdir="$LAVPREFIX/lib" \
+        --extra-cflags="-march=$TARGET_CPU -O2" \
+        || fail "budowanie bibliotek FFmpeg (libav*) nie powiodło się"
+fi
+log "1/5 videopipeline + biblioteka core ($TARGET_CPU, informacje o plikach przez libavformat)"
+FFMPEG_DIR="$LAVPREFIX" LD_LIBRARY_PATH="$LAVPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    VP_RUSTFLAGS_EXTRA="-C target-cpu=$TARGET_CPU" bash ./build.sh --features videopipeline/libav
 REL="${CARGO_TARGET_DIR:-target}/release"
 [[ -x "$REL/videopipeline" && -f "$REL/libvideopipeline_core.so" ]] \
     || fail "build.sh nie wytworzył binarki/biblioteki"
@@ -300,8 +311,11 @@ STD_SO="$(find "$SYSROOT/lib" -name 'libstd-*.so' | head -n1)"
 [ -n "$STD_SO" ] || { echo "BŁĄD: brak libstd-*.so w $SYSROOT/lib"; exit 1; }
 echo "libstd: $STD_SO"
 cp "$STD_SO" "$APPDIR/usr/lib/"
+# libavformat/libavcodec/libavutil (z dowiązaniami .so.N, których szuka biblioteka core).
+cp -a "$LAVPREFIX"/lib/lib{avformat,avcodec,avutil}.so.* "$APPDIR/usr/lib/"
 
-install -m755 "$FFPREFIX/bin/ffmpeg" "$FFPREFIX/bin/ffprobe" "$APPDIR/usr/bin/"
+# ffprobe niepotrzebny — informacje o plikach program czyta przez libavformat.
+install -m755 "$FFPREFIX/bin/ffmpeg" "$APPDIR/usr/bin/"
 install -m755 "$TOOLS/bin/dovi_tool" "$TOOLS/bin/hdr10plus_tool" "$APPDIR/usr/bin/"
 install -m755 "$(command -v mkvmerge)" "$APPDIR/usr/bin/"
 install -m755 "$(command -v mediainfo)" "$APPDIR/usr/bin/"
@@ -359,7 +373,6 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
         --executable "$APPDIR/usr/bin/mpv" \
         --executable "$APPDIR/usr/bin/videopipeline-term" \
         --executable "$APPDIR/usr/bin/ffmpeg" \
-        --executable "$APPDIR/usr/bin/ffprobe" \
         --executable "$APPDIR/usr/bin/dovi_tool" \
         --executable "$APPDIR/usr/bin/hdr10plus_tool" \
         --desktop-file "$APPDIR/usr/share/applications/videopipeline.desktop" \
