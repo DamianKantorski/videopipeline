@@ -823,7 +823,7 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
         match o.audio {
             AudioChoice::Auto => "Jak źródło: kopia; PCM → FLAC (MKV) / AAC (MP4); iPhone/iPad → AAC.",
             AudioChoice::Copy => "Bez zmian; do MP4 kodeki spoza MP4 (DTS, TrueHD, PCM) → E-AC-3 640k.",
-            AudioChoice::Aac => "AAC 128 kb/s na kanał (stereo 256k, 5.1 640k); AAC ze źródła — kopia.",
+            AudioChoice::Aac => "AAC CBR 160 kb/s na kanał (stereo 320k, 5.1 960k); AAC ze źródła — kopia.",
             AudioChoice::Alac => "ALAC — bezstratny (Apple), 16 albo 24 bity jak źródło.",
             AudioChoice::Flac => "FLAC — bezstratny, kompresja 8, 16 albo 24 bity jak źródło.",
             AudioChoice::Ac3 => "AC-3 (Dolby Digital) 640k/448k — np. PS4 z AVC; ponad 5.1 → 5.1.",

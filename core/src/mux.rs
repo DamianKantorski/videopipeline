@@ -91,8 +91,8 @@ fn audio_codec_args(out: AudioOut, n: usize, codec: &str, channels: u32) -> Vec<
         AudioOut::Aac => {
             // Wbudowany koder AAC ffmpeg (libfdk_aac nie może być rozpowszechniany z GPL, AudioToolbox
             // jest tylko na macOS). Jego tryb VBR jest eksperymentalny i słabszy niż CBR, więc najwyższa
-            // jakość = wysoka stała przepływność: 128 kb/s na kanał (stereo 256k, 5.1 640k).
-            let rate = (128 * channels.max(1)).min(640);
+            // jakość = wysoka stała przepływność: 160 kb/s na kanał (stereo 320k, 5.1 960k).
+            let rate = (160 * channels.max(1)).min(1280);
             v.extend([c("c"), "aac".into(), c("b"), format!("{rate}k")]);
         }
         AudioOut::Alac => {
@@ -596,8 +596,8 @@ mod audio_tests {
         assert_eq!(audio_out(A::Copy, mp4, "dts", false), O::Eac3);
         assert_eq!(audio_out(A::Copy, mkv, "dts", false), O::Copy);
         // parametry
-        assert_eq!(audio_codec_args(O::Aac, 0, "pcm_s16le", 2), ["-c:a:0", "aac", "-b:a:0", "256k"]);
-        assert_eq!(audio_codec_args(O::Aac, 1, "dts", 8), ["-c:a:1", "aac", "-b:a:1", "640k"]);
+        assert_eq!(audio_codec_args(O::Aac, 0, "pcm_s16le", 2), ["-c:a:0", "aac", "-b:a:0", "320k"]);
+        assert_eq!(audio_codec_args(O::Aac, 1, "dts", 8), ["-c:a:1", "aac", "-b:a:1", "1280k"]);
         assert!(audio_codec_args(O::Flac, 0, "pcm_s24le", 2).contains(&"24".to_string()));
         assert!(audio_codec_args(O::Ac3, 0, "truehd", 8).contains(&"6".to_string()));
     }
