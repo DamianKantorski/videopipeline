@@ -8,6 +8,7 @@ macro_rules! plog {
 }
 
 pub mod analysis;
+pub mod av;
 pub mod config;
 pub mod copy;
 pub mod encode;
@@ -15,7 +16,6 @@ pub mod files;
 pub mod hw;
 pub mod extract;
 pub mod inject;
-#[cfg(feature = "libav")]
 pub mod libav;
 pub mod intelmon;
 pub mod mediainfo;

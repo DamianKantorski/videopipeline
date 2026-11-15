@@ -37,6 +37,27 @@ pub fn set_cancel(v: bool) {
     CANCEL.store(v, Ordering::SeqCst);
 }
 
+/// Liczba kodowań działających w naszym procesie (biblioteki FFmpeg w wątkach).
+static ENCODING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn encoding_begin() {
+    ENCODING.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn encoding_end() {
+    // Zawsze w parze z encoding_begin (strażnik w wątku kodowania).
+    ENCODING.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Procesy, których obciążenie karty pokazuje monitor: nasz własny w trakcie kodowania i narzędzia pomocnicze.
+pub fn monitored_pids() -> Vec<u32> {
+    let mut v: Vec<u32> = PIDS.lock().map(|g| g.clone()).unwrap_or_default();
+    if ENCODING.load(Ordering::SeqCst) > 0 {
+        v.push(std::process::id());
+    }
+    v
+}
+
 pub fn register(pid: u32) {
     if let Ok(mut g) = PIDS.lock() {
         g.push(pid);

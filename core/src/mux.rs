@@ -212,8 +212,8 @@ fn usable_audio(ids: Vec<u32>, info: &HashMap<u32, (String, u32)>) -> Vec<u32> {
             alt.sort();
             let alt = alt.into_iter().find(|i| !out.contains(i));
             match alt {
-                Some(a) => plog!("    audio {idx} ({codec}) bez dekodera w ffmpeg — zamiast niej ścieżka {a}"),
-                None => plog!("    audio {idx} ({codec}) bez dekodera w ffmpeg — pominięta"),
+                Some(a) => plog!("    audio {idx} ({codec}) bez dekodera w bibliotekach FFmpeg — zamiast niej ścieżka {a}"),
+                None => plog!("    audio {idx} ({codec}) bez dekodera w bibliotekach FFmpeg — pominięta"),
             }
             alt
         };

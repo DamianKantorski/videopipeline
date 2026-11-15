@@ -1,13 +1,11 @@
 //! Wykrywanie sprzętowych enkoderów: NVIDIA NVENC, Intel QSV i Intel VAAPI.
 //! Sama obecność enkodera w `ffmpeg -encoders` nic nie gwarantuje (brak karty, sterownika,
 //! runtime'u oneVPL), więc każdy kandydat przechodzi krótkie, prawdziwe kodowanie testowe.
-use crate::log::LoggedOutput;
 use crate::config::{Codec, Engine};
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -66,7 +64,7 @@ impl HwInfo {
     /// Np. "NVIDIA NVENC (HEVC, AV1) · Intel QSV (HEVC)".
     pub fn summary(&self) -> String {
         if !self.ffmpeg_ok {
-            return "ffmpeg nie działa".into();
+            return "biblioteki FFmpeg nie działają".into();
         }
         let parts: Vec<String> = Engine::ALL
             .iter()
@@ -144,7 +142,7 @@ fn pick_windows_qsv_device(encoders: &[String]) -> Vec<(String, bool, String, St
         let dev = PathBuf::from(d);
         let Some(args) = test_args(Engine::Qsv, Codec::Hevc, Some(&dev)) else { continue };
         let (ok, err) = run_with_timeout(&args);
-        tries.push((d.to_string(), ok, format!("ffmpeg {}", args.join(" ")), err));
+        tries.push((d.to_string(), ok, args.join(" "), err));
         if ok {
             if let Ok(mut g) = WIN_QSV_CHOSEN.lock() {
                 *g = Some(d.to_string());
@@ -179,7 +177,7 @@ fn sv(xs: &[&str]) -> Vec<String> {
 
 /// Argumenty ffmpeg krótkiego kodowania testowego (lavfi → enkoder → null).
 fn test_args(e: Engine, c: Codec, dev: Option<&Path>) -> Option<Vec<String>> {
-    let mut v = sv(&["-hide_banner", "-nostdin", "-loglevel", "error"]);
+    let mut v: Vec<String> = vec![];
     let dev = dev.map(|d| d.to_string_lossy().to_string());
     match e {
         Engine::Nvenc => {}
@@ -206,43 +204,37 @@ fn test_args(e: Engine, c: Codec, dev: Option<&Path>) -> Option<Vec<String>> {
     Some(v)
 }
 
-/// Uruchamia ffmpeg z limitem czasu: (kod wyjścia 0?, komunikaty ffmpeg ze stderr).
-fn run_with_timeout(args: &[String]) -> (bool, String) {
-    let mut child = match crate::proc::command("ffmpeg")
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return (false, format!("nie można uruchomić ffmpeg: {e}")),
+/// Wykonuje zadanie testowe w osobnym wątku z limitem czasu: (sukces, komunikaty bibliotek).
+pub(crate) fn run_with_timeout(args: &[String]) -> (bool, String) {
+    let job = match crate::av::Job::parse(args) {
+        Ok(j) => j,
+        Err(e) => return (false, format!("{e:#}")),
     };
-    // stderr czytany w osobnym wątku — pełny bufor potoku nie zablokuje ffmpeg.
-    let err_reader = child.stderr.take().map(|mut e| {
-        thread::spawn(move || {
-            let mut s = String::new();
-            let _ = std::io::Read::read_to_string(&mut e, &mut s);
-            s
-        })
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let st = stop.clone();
+    let spawned = thread::Builder::new().name("test-kodera".into()).spawn(move || {
+        let r = crate::av::run(&job, crate::av::Hooks { inject: None, stop: Some(st) });
+        let _ = tx.send(match r {
+            Ok(_) => (true, String::new()),
+            Err(e) => (false, format!("{e:#}")),
+        });
     });
-    let start = Instant::now();
-    let ok = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st.success(),
-            Ok(None) if start.elapsed() < TEST_TIMEOUT => thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
+    if spawned.is_err() {
+        return (false, "nie można uruchomić wątku testu".into());
+    }
+    let res = match rx.recv_timeout(TEST_TIMEOUT) {
+        Ok(r) => r,
+        Err(_) => {
+            // Wątek zawieszony w sterowniku zostaje w tle; test uznajemy za nieudany.
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            (false, "(przekroczony limit czasu testu)".to_string())
         }
     };
-    let mut err = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    if !ok && start.elapsed() >= TEST_TIMEOUT {
-        err.push_str("\n(przekroczony limit czasu testu)");
+    if crate::log::full() {
+        crate::log::file_line(&format!("[test] {} → {}{}", args.join(" "), if res.0 { "OK" } else { "BŁĄD" }, if res.1.is_empty() { String::new() } else { format!("\n{}", res.1) }));
     }
-    (ok, err.trim().to_string())
+    res
 }
 
 /// Kodowanie testowe jednej pary silnik + kodek.
@@ -287,11 +279,11 @@ pub fn detect_report() -> (HwInfo, Vec<TestReport>, Vec<(String, bool, String, S
     let mut avail = vec![];
     for (e, c, job) in jobs {
         let (ok, command, error) = match job {
-            None => (false, String::new(), format!("ffmpeg nie ma enkodera {}", e.encoder(c))),
+            None => (false, String::new(), format!("biblioteki FFmpeg nie mają kodera {}", e.encoder(c))),
             Some((None, _)) => (false, String::new(), "nie znaleziono karty Intel".into()),
             Some((Some(args), h)) => {
                 let (ok, err) = h.and_then(|h| h.join().ok()).unwrap_or((false, String::new()));
-                (ok, format!("ffmpeg {}", args.join(" ")), err)
+                (ok, args.join(" "), err)
             }
         };
         if ok {
@@ -302,28 +294,14 @@ pub fn detect_report() -> (HwInfo, Vec<TestReport>, Vec<(String, bool, String, S
     (HwInfo { ffmpeg_ok: true, avail, intel_dev }, reports, qsv_tries)
 }
 
-/// Wersja ffmpeg (pierwsza linia `ffmpeg -version`).
+/// Wersje bibliotek FFmpeg, na których działa program.
 pub fn ffmpeg_version() -> Option<String> {
-    let out = crate::proc::command("ffmpeg").arg("-version").stdin(Stdio::null()).logged_output().ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().next().map(str::to_string)
+    Some(crate::av::versions())
 }
 
-/// Lista enkoderów ffmpeg (druga kolumna `ffmpeg -encoders`); None = ffmpeg nie działa.
+/// Lista koderów w libavcodec.
 fn ffmpeg_encoders() -> Option<Vec<String>> {
-    let out = crate::proc::command("ffmpeg")
-        .args(["-hide_banner", "-nostdin", "-encoders"])
-        .stdin(Stdio::null())
-        .logged_output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
-            .collect(),
-    )
+    Some(crate::av::encoders())
 }
 
 /// Wykrywa działające enkodery (testy równolegle, zwykle ~1 s).

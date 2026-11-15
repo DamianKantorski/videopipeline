@@ -1,34 +1,20 @@
-use crate::log::LoggedOutput;
 use crate::config::*;
 use anyhow::{bail, Result};
 use std::{fs, path::Path};
 
-fn ffmpeg_text(args: &[&str]) -> String {
-    match crate::proc::command("ffmpeg").args(args).logged_output() {
-        Ok(o) => format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&o.stdout),
-            String::from_utf8_lossy(&o.stderr)
-        ),
-        Err(_) => String::new(),
-    }
-}
-
-/// Krótki, prawdziwy encode na GPU — sama obecność w -encoders nic nie gwarantuje.
+/// Krótki, prawdziwy encode na GPU — sama obecność kodera w bibliotece nic nie gwarantuje.
 fn av1_selftest(tune: &str, cq: u8, out: &Path) -> bool {
     let _ = fs::remove_file(out);
-    let ok = crate::proc::command("ffmpeg")
-        .args(["-hide_banner", "-y", "-loglevel", "error"])
-        .args(["-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=0.25"])
-        .args(["-an", "-frames:v", "6", "-c:v", "av1_nvenc", "-preset", "p7"])
-        .args(["-tune", tune, "-rc", "vbr", "-cq", &cq.to_string(), "-b:v", "0"])
-        .args(["-spatial-aq", "1", "-temporal-aq", "1", "-bf", "4"])
-        .args(["-b_ref_mode", "middle", "-multipass", "fullres"])
-        .args(["-rc-lookahead", "32", "-highbitdepth", "1", "-pix_fmt", "yuv420p"])
-        .arg(out)
-        .logged_output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let args: Vec<String> = [
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=0.25", "-frames:v", "6", "-c:v", "av1_nvenc", "-preset", "p7",
+        "-tune", tune, "-rc", "vbr", "-cq", &cq.to_string(), "-b:v", "0", "-spatial-aq", "1", "-temporal-aq", "1",
+        "-bf", "4", "-b_ref_mode", "middle", "-multipass", "fullres", "-rc-lookahead", "32", "-highbitdepth", "1",
+        "-pix_fmt", "yuv420p", "-f", "matroska", &out.to_string_lossy(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let ok = crate::hw::run_with_timeout(&args).0;
     let valid = ok
         && fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false)
         && crate::probe::video_codec(out).as_deref() == Some("av1");
@@ -39,15 +25,13 @@ fn av1_selftest(tune: &str, cq: u8, out: &Path) -> bool {
 /// NVIDIA: AV1 wymaga av1_nvenc z -highbitdepth; UHQ tylko gdy sterownik je przyjmie.
 fn preflight_nvenc(opts: &Opts, rt: &mut Runtime) -> Result<()> {
     if opts.codec == Codec::Av1 {
-        let enc = ffmpeg_text(&["-hide_banner", "-encoders"]);
-        if !enc.lines().any(|l| l.split_whitespace().nth(1) == Some("av1_nvenc")) {
-            bail!("Wybrano -av1, ale bieżący FFmpeg nie udostępnia enkodera av1_nvenc.");
+        if !crate::av::encoders().iter().any(|e| e == "av1_nvenc") {
+            bail!("Wybrano -av1, ale biblioteki FFmpeg nie udostępniają kodera av1_nvenc.");
         }
-        let help = ffmpeg_text(&["-hide_banner", "-h", "encoder=av1_nvenc"]);
-        if !help.contains("highbitdepth") {
-            bail!("av1_nvenc w tym FFmpeg nie udostępnia opcji -highbitdepth.");
+        if !crate::av::encoder_has_option("av1_nvenc", "highbitdepth") {
+            bail!("av1_nvenc w tych bibliotekach FFmpeg nie udostępnia opcji highbitdepth.");
         }
-        if help.split_whitespace().any(|w| w == "uhq") {
+        if crate::av::encoder_option_has_value("av1_nvenc", "tune", "uhq") {
             rt.av1_tune = "uhq".into();
         }
 
@@ -87,12 +71,7 @@ fn preflight_intel(opts: &Opts, rt: &mut Runtime) -> Result<()> {
         );
     }
     if opts.engine == Engine::Qsv {
-        rt.qsv_decoders = ffmpeg_text(&["-hide_banner", "-decoders"])
-            .lines()
-            .filter_map(|l| l.split_whitespace().nth(1))
-            .filter(|n| n.ends_with("_qsv"))
-            .map(str::to_string)
-            .collect();
+        rt.qsv_decoders = crate::av::decoders().into_iter().filter(|n| n.ends_with("_qsv")).collect();
     }
     let cq = opts.cq();
     let quality = match (opts.engine, opts.codec) {
@@ -177,8 +156,7 @@ pub fn run(opts: &Opts) -> Result<Runtime> {
     }
 
     if opts.denoise {
-        let f = ffmpeg_text(&["-hide_banner", "-filters"]);
-        let has = |n: &str| f.contains(n);
+        let has = crate::av::has_filter;
         match opts.engine {
             Engine::Nvenc => {
                 if has("bilateral_cuda") && has("hwupload_cuda") && has("hwdownload") {
@@ -213,7 +191,7 @@ pub fn run(opts: &Opts) -> Result<Runtime> {
         rt.tonemap = t;
         rt.vulkan_dev = vk;
         match rt.tonemap {
-            Tonemap::None => plog!("UWAGA: ffmpeg nie ma filtrów mapowania tonów — pliki HDR w AVC zostaną pominięte."),
+            Tonemap::None => plog!("UWAGA: biblioteki FFmpeg nie mają filtrów mapowania tonów — pliki HDR w AVC zostaną pominięte."),
             Tonemap::Placebo => plog!(
                 "AVC ze źródeł HDR: mapowanie tonów HDR → SDR BT.709 — {} (urządzenie Vulkan: {}).",
                 Tonemap::Placebo.label(),
@@ -230,11 +208,7 @@ const HDR_TEST_SRC: &str =
     "color=c=gray:s=320x240:r=25:d=0.2,format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc";
 
 fn ffmpeg_ok(args: &[String]) -> bool {
-    crate::proc::command("ffmpeg")
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .logged_output()
-        .is_ok_and(|o| o.status.success())
+    crate::hw::run_with_timeout(args).0
 }
 
 /// Najlepsze działające mapowanie tonów dla wybranej karty: libplacebo (Vulkan, jakość jak w mpv),
@@ -242,8 +216,7 @@ fn ffmpeg_ok(args: &[String]) -> bool {
 fn detect_tonemap(opts: &Opts, rt: &Runtime) -> (Tonemap, String) {
     let sv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
     let run = |pre: Vec<String>, vf: &str| {
-        let mut a = sv(&["-hide_banner", "-nostdin", "-loglevel", "error"]);
-        a.extend(pre);
+        let mut a = pre;
         a.extend(sv(&["-f", "lavfi", "-i", HDR_TEST_SRC, "-vf", vf, "-frames:v", "3", "-f", "null", "-"]));
         ffmpeg_ok(&a)
     };

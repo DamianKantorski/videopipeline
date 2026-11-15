@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache (ffmpeg, dovi_tool, hdr10plus_tool, linuxdeploy, cargo)
+      - name: Cache (biblioteki FFmpeg, mpv, linuxdeploy, cargo)
         uses: actions/cache@v4
         with:
           path: build/cache

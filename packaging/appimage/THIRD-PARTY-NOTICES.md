@@ -3,17 +3,17 @@
 | Składnik | Licencja | Źródło |
 |---|---|---|
 | VideoPipeline | GPL-3.0 | https://github.com/8brzrs26ws-cloud/videopipeline |
-| FFmpeg (ffmpeg oraz biblioteki dynamiczne libavformat, libavcodec, libavutil; budowany z `--enable-gpl` — filtr hqdn3d jest na licencji GPL — bez `--enable-nonfree`; z ffnvcodec, NVENC/NVDEC, CUDA-LLVM, dav1d; Linux: VAAPI i libvpl, Windows: libvpl, D3D11VA, DXVA2) | GPL-2.0+ | https://ffmpeg.org/download.html |
+| FFmpeg (biblioteki dynamiczne libavformat, libavcodec, libavfilter, libavutil, libswscale, libswresample — program wywołuje je bezpośrednio; budowany z `--enable-gpl` — filtr hqdn3d jest na licencji GPL — bez `--enable-nonfree`; z ffnvcodec, NVENC/NVDEC, CUDA-LLVM, dav1d; Linux: VAAPI i libvpl, Windows: libvpl, D3D11VA, DXVA2) | GPL-2.0+ | https://ffmpeg.org/download.html |
 | nv-codec-headers (statycznie, tylko nagłówki) | MIT | https://github.com/FFmpeg/nv-codec-headers |
 | libva, libdrm (Linux; dynamicznie — kopie w AppImage używane tylko, gdy brak ich w systemie) | MIT | https://github.com/intel/libva |
-| libvpl / oneVPL dispatcher (Linux: dynamicznie, Windows: statycznie w ffmpeg.exe) | MIT | https://github.com/intel/libvpl |
-| zimg (filtr zscale w ffmpeg — mapowanie tonów HDR → SDR; Linux: biblioteka z Debiana, Windows: statycznie) | WTFPL | https://github.com/sekrit-twc/zimg |
-| OpenCL ICD Loader (tonemap_opencl w ffmpeg; Linux: ocl-icd z Debiana, Windows: ładowarka Khronos statycznie) | Apache-2.0 / BSD-2-Clause | https://github.com/KhronosGroup/OpenCL-ICD-Loader |
-| dav1d (statycznie w ffmpeg) | BSD-2-Clause | https://code.videolan.org/videolan/dav1d |
+| libvpl / oneVPL dispatcher (Linux: dynamicznie, Windows: statycznie w bibliotekach FFmpeg) | MIT | https://github.com/intel/libvpl |
+| zimg (filtr zscale w libavfilter — mapowanie tonów HDR → SDR; Linux: biblioteka z Debiana, Windows: statycznie) | WTFPL | https://github.com/sekrit-twc/zimg |
+| OpenCL ICD Loader (tonemap_opencl w libavfilter; Linux: ocl-icd z Debiana, Windows: ładowarka Khronos statycznie) | Apache-2.0 / BSD-2-Clause | https://github.com/KhronosGroup/OpenCL-ICD-Loader |
+| dav1d (Linux: biblioteka z Debiana, Windows: statycznie w bibliotekach FFmpeg) | BSD-2-Clause | https://code.videolan.org/videolan/dav1d |
 | MediaInfoLib (biblioteka MediaInfo — okienko F2; Linux: libmediainfo i libzen z dystrybucji Debian z zależnościami, Windows: oficjalna MediaInfo.dll MediaArea) | BSD-2-Clause (libzen: zlib) | https://mediaarea.net/MediaInfo |
 | mpv (odtwarzacz pod F3) — Linux: budowany ze źródeł z bibliotekami z dystrybucji Debian (FFmpeg/libav*, libass, shaderc, Lua…); Windows: gotowa kompilacja shinchiro/mpv-winbuild-cmake | GPL-2.0+ | https://github.com/mpv-player/mpv, https://github.com/shinchiro/mpv-winbuild-cmake |
-| libplacebo (statycznie w ffmpeg — filtr libplacebo; Linux: także w mpv; budowana ze źródeł) | LGPL-2.1+ | https://code.videolan.org/videolan/libplacebo |
-| glslang (Windows: statycznie w ffmpeg.exe, kompilator shaderów libplacebo) | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 | https://github.com/KhronosGroup/glslang |
+| libplacebo (statycznie w libavfilter — filtr libplacebo; Linux: także w mpv; budowana ze źródeł) | LGPL-2.1+ | https://code.videolan.org/videolan/libplacebo |
+| glslang (Windows: statycznie w bibliotekach FFmpeg, kompilator shaderów libplacebo) | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 | https://github.com/KhronosGroup/glslang |
 | shaderc (Linux: kompilator shaderów libplacebo, z Debiana) | Apache-2.0 | https://github.com/google/shaderc |
 | Vulkan-Headers (nagłówki; ffmpeg ładuje sterownik Vulkan w trakcie działania) | Apache-2.0 / MIT | https://github.com/KhronosGroup/Vulkan-Headers |
 | Alacritty (terminal `videopipeline-term`, budowany ze źródeł z podmienioną ikoną) | Apache-2.0 (LICENSE-ALACRITTY) | https://github.com/alacritty/alacritty |

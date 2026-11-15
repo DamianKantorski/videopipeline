@@ -50,32 +50,3 @@ ffmpeg_unpack() {
     fi
     [[ -x "$dest/ffmpeg-$ver/configure" ]]
 }
-
-# Biblioteki dynamiczne FFmpeg (libavformat, libavcodec, libavutil), przez które program czyta
-# informacje o plikach zamiast uruchamiać ffprobe (funkcja `libav`). Tylko demuxery, parsery
-# i dekodery — kodowanie nadal robi statyczny ffmpeg z paczki, więc bez programów, filtrów,
-# enkoderów, muxerów i sieci. $1 = wersja, $2 = katalog roboczy, $3 = archiwa źródeł,
-# $4 = prefiks instalacji, reszta = dodatkowe opcje configure (np. kroskompilacja).
-libav_build() {
-    local ver="$1" work="$2" store="$3" prefix="$4"; shift 4
-    local src="$work/libav-src"
-    rm -rf "$src" "$prefix"
-    ffmpeg_unpack "$ver" "$src" "$store" || return 1
-    (
-        cd "$src/ffmpeg-$ver"
-        if ! ./configure --prefix="$prefix" --enable-gpl \
-            --enable-shared --disable-static \
-            --disable-autodetect --disable-doc --disable-programs --disable-debug \
-            --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
-            --disable-encoders --disable-muxers --disable-network --disable-hwaccels \
-            --disable-indevs --disable-outdevs \
-            --enable-zlib "$@"; then
-            echo "---- ffbuild/config.log (koniec) ----" >&2
-            tail -n 40 ffbuild/config.log >&2 || true
-            exit 1
-        fi
-        make -j"${JOBS:-$(nproc)}"
-        make install
-    ) || return 1
-    rm -rf "$src"
-}

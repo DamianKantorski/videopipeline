@@ -70,7 +70,7 @@ Suggests: nvidia-driver
 Maintainer: VideoPipeline <noreply@users.noreply.github.com>
 Homepage: https://github.com/8brzrs26ws-cloud/videopipeline
 Description: Kodowanie wideo HEVC/AV1 na GPU (NVIDIA NVENC, Intel QSV/VAAPI) z TUI w stylu MC
- Zawiera własne kopie ffmpeg (NVENC/NVDEC/CUDA, Intel VAAPI/QSV), bibliotek FFmpeg
+ Zawiera własne biblioteki FFmpeg (NVENC/NVDEC/CUDA, Intel VAAPI/QSV)
  i MediaInfo w /opt/videopipeline. Wymaga sterownika GPU z systemu
  oraz procesora x86-64-v3 (Haswell / Zen 1 i nowsze).
 C

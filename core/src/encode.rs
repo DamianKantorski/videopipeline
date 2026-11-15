@@ -3,32 +3,24 @@ use crate::{
     config::*,
     model::{read_progress, Panel, State},
     probe,
-    proc::{self, PIDS},
+    proc,
 };
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
-    process::{Child, ExitStatus, Stdio},
     thread,
     time::Duration,
 };
 
-/// Dolby Vision / HDR10+ w locie: koder → wątek z RPU i SEI HDR10+ → ffmpeg składający plik wynikowy.
-struct Live {
-    mux: Child,
-    thread: thread::JoinHandle<anyhow::Result<crate::inject::Stats>>,
-    mux_log: PathBuf,
-}
-
 struct Running {
-    child: Child,
-    live: Option<Live>,
+    /// Wątek silnika (biblioteki FFmpeg) kodujący ten plik.
+    job: thread::JoinHandle<anyhow::Result<crate::av::Report>>,
     name: String,
-    /// Plik zapisywany przez ffmpeg: <wynik>.part.
+    live: bool,
+    /// Plik zapisywany w trakcie: <wynik>.part.
     output: PathBuf,
     /// Docelowa nazwa pliku wynikowego (po sukcesie .part → wynik).
     final_out: PathBuf,
-    log: PathBuf,
     pf: PathBuf,
 }
 
@@ -83,39 +75,6 @@ fn direct_out(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> OutSpec {
     tail.extend(sv(&["-y"]));
     tail.push(part.to_string_lossy().into());
     OutSpec { streams, tail }
-}
-
-/// Tryb w locie, koder: samo wideo jako surowe HEVC na stdout (czyta je wstrzykiwacz).
-fn live_encoder_out() -> OutSpec {
-    OutSpec { streams: sv(&["-an", "-sn", "-map", "0:v:0"]), tail: sv(&["-f", "hevc", "pipe:1"]) }
-}
-
-/// Tryb w locie, drugi ffmpeg: wideo z metadanymi (Matroska z potoku) + audio i napisy źródła.
-fn live_mux_args(opts: &Opts, a: &Analysis, p: &Paths, part: &Path) -> Vec<String> {
-    let info = probe::stream_codecs(&a.input_file);
-    let level = if crate::log::full() { "info" } else { "warning" };
-    let mut v = sv(&["-hide_banner", "-nostats", "-loglevel", level, "-f", "matroska", "-i", "pipe:0", "-i"]);
-    v.push(a.input_file.to_string_lossy().into());
-    v.extend(sv(&["-map", "0:v:0", "-c:v", "copy"]));
-    let (src, _) = crate::mux::source_streams(opts, a, p.container, 1, &info);
-    v.extend(src);
-    v.extend(crate::mux::meta_args(opts, a, 1));
-    v.extend(sv(&["-map_chapters", "1"]));
-    match p.container {
-        // hvc1 dla odtwarzaczy Apple / przeglądarek; dvvC w MP4 wymaga -strict unofficial.
-        Container::Mp4 => v.extend(sv(&["-tag:v", "hvc1", "-strict", "unofficial", "-movflags", "+faststart", "-f", "mp4"])),
-        Container::Mkv => v.extend(sv(&["-f", "matroska"])),
-    }
-    v.extend(sv(&["-y"]));
-    v.push(part.to_string_lossy().into());
-    v
-}
-
-/// "24000/1001" → (24000, 1001)
-fn parse_fps(s: &str) -> Option<(u64, u64)> {
-    let (n, d) = s.split_once('/').unwrap_or((s, "1"));
-    let (n, d) = (n.trim().parse::<u64>().ok()?, d.trim().parse::<u64>().ok()?);
-    (n > 0 && d > 0).then_some((n, d))
 }
 
 /// Mapowanie tonów HDR (PQ/HLG, BT.2020) → SDR BT.709 8-bit dla AVC. Krzywa Hable bez desaturacji.
@@ -596,7 +555,7 @@ fn result_check(opts: &Opts, out: &Path, pf: &Path) -> Result<(), String> {
         Err(e) => return Err(format!("brak pliku {}: {e}", out.display())),
     }
     if !read_progress(pf).ended {
-        return Err("ffmpeg nie zgłosił końca zapisu (brak progress=end)".into());
+        return Err("zapis pliku nie został zakończony".into());
     }
     let (codec, err) = probe::video_codec_diag(out);
     match codec.as_deref() {
@@ -606,17 +565,10 @@ fn result_check(opts: &Opts, out: &Path, pf: &Path) -> Result<(), String> {
     }
 }
 
-fn start(
-    opts: &Opts,
-    rt: &Runtime,
-    a: &Analysis,
-    slot: usize,
-    panel: &Panel,
-) -> std::io::Result<Running> {
+fn start(opts: &Opts, rt: &Runtime, a: &Analysis, slot: usize, panel: &Panel) -> std::io::Result<Running> {
     let p = opts.paths_for(&a.input_file);
     let key = sanitize(&a.filename);
-    let pf = rt.progress_dir.join(format!("{key}.ffprogress"));
-    let log = rt.progress_dir.join(format!("{key}.log"));
+    let pf = rt.progress_dir.join(format!("{key}.progress"));
     let _ = fs::remove_file(&pf);
     File::create(&pf)?;
 
@@ -626,29 +578,18 @@ fn start(
     if opts.codec == Codec::Avc && a.color.is_hdr() && rt.tonemap == Tonemap::None {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "źródło HDR, a ffmpeg nie ma filtrów mapowania tonów (zscale/tonemap) — AVC niemożliwe; wybierz HEVC albo AV1",
+            "źródło HDR, a biblioteki FFmpeg nie mają filtrów mapowania tonów (zscale/tonemap) — AVC niemożliwe; wybierz HEVC albo AV1",
         ));
     }
-    let direct = opts.direct_encode(a.has_dovi, a.has_hdr10plus);
-    // DV/HDR10+ w locie: RPU i SEI HDR10+ doklejane do klatek między koderem a składaniem pliku.
-    let live = !direct;
-    let fps = if live {
-        let fps = probe::video_fps(&a.input_file).as_deref().and_then(parse_fps);
-        if fps.is_none() {
-            return Err(std::io::Error::other("nie można odczytać liczby klatek na sekundę źródła"));
-        }
-        fps
-    } else {
-        None
-    };
+    // DV/HDR10+ w locie: RPU i SEI HDR10+ doklejane do pakietów kodera przed zapisem do kontenera.
+    let live = !opts.direct_encode(a.has_dovi, a.has_hdr10plus);
     let part = PathBuf::from(format!("{}.part", p.output.display()));
-    let (write_to, out) = if direct {
-        let _ = fs::remove_file(&part);
-        (part.clone(), direct_out(opts, a, &p, &part))
-    } else {
-        let _ = fs::remove_file(&part);
-        (part.clone(), live_encoder_out())
-    };
+    let _ = fs::remove_file(&part);
+    let mut out = direct_out(opts, a, &p, &part);
+    if live && p.container == Container::Mp4 {
+        // Rekord konfiguracji Dolby Vision (dvvC) w MP4 wymaga zgody na elementy spoza normy.
+        out.tail.splice(0..0, sv(&["-strict", "unofficial"]));
+    }
     let (args, note, decoder) = if opts.engine == Engine::Nvenc {
         let (args, note) = build_args_nvenc(opts, rt, a, &out, &pf);
         (args, note, "CUDA/NVDEC".to_string())
@@ -657,181 +598,96 @@ fn start(
         build_args_intel(opts, rt, a, src.as_deref(), &out, &pf)
     };
     let eng = opts.engine.label();
-    let mode = if direct {
-        format!(" — od razu do {}", p.container.ext().to_uppercase())
-    } else {
+    let mode = if live {
         format!(" — DV/HDR10+ w locie do {}", p.container.ext().to_uppercase())
+    } else {
+        format!(" — od razu do {}", p.container.ext().to_uppercase())
     };
     panel.set(&a.filename, State::Nvenc, format!("{eng} {slot}/2 — {note} — dekoder: {decoder}{mode}"));
 
-    let logf = File::create(&log)?;
-    let mut cmd = crate::proc::command("ffmpeg");
-    cmd.args(&args).stdin(Stdio::null()).stderr(Stdio::from(logf.try_clone()?));
-    if live {
-        cmd.stdout(Stdio::piped());
-    } else {
-        cmd.stdout(Stdio::from(logf));
-    }
-    crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
-    let mut child = cmd.spawn()?;
-    proc::register(child.id());
-    let live = match fps {
-        Some(fps) => match start_live(opts, a, &p, &part, &key, rt, fps, &mut child) {
-            Ok(l) => Some(l),
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                proc::unregister(child.id());
-                return Err(e);
-            }
-        },
-        None => None,
-    };
-    Ok(Running {
-        child,
-        live,
-        name: a.filename.clone(),
-        output: write_to,
-        final_out: p.output.clone(),
-        log,
-        pf,
-    })
-}
-
-/// Drugi ffmpeg (składanie pliku) i wątek wstrzykujący metadane między nim a koderem.
-#[allow(clippy::too_many_arguments)]
-fn start_live(
-    opts: &Opts,
-    a: &Analysis,
-    p: &Paths,
-    part: &Path,
-    key: &str,
-    rt: &Runtime,
-    fps: (u64, u64),
-    encoder: &mut Child,
-) -> std::io::Result<Live> {
-    let mux_log = rt.progress_dir.join(format!("{key}.mux.log"));
-    let logf = File::create(&mux_log)?;
-    let mut mux_cmd = crate::proc::command("ffmpeg");
-    mux_cmd
-        .args(live_mux_args(opts, a, p, part))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(logf.try_clone()?))
-        .stderr(Stdio::from(logf));
-    crate::log::file_line(&format!("$ {}", crate::log::cmdline(&mux_cmd)));
-    let mut mux = mux_cmd.spawn()?;
-    proc::register(mux.id());
-    let (Some(enc_out), Some(mux_in)) = (encoder.stdout.take(), mux.stdin.take()) else {
-        let _ = mux.kill();
-        return Err(std::io::Error::other("brak potoku między koderem a ffmpeg"));
-    };
-    let rpu = (a.has_dovi && !opts.no_dv).then(|| p.temp_rpu.clone());
-    let json = (a.has_hdr10plus && !opts.no_hdr10plus).then(|| p.temp_hdr10plus.clone());
-    // Wynik kodera ma zawsze znaczniki PQ (smpte2084) — zgodność warstwy bazowej DV jak dla HDR10.
-    let info = crate::inject::StreamInfo { fps, hlg: false };
+    let job = crate::av::Job::parse(&args).map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+    crate::log::file_line(&format!("[kodowanie] {} — zadanie: {}", a.filename, args.join(" ")));
+    let rpu = (live && a.has_dovi && !opts.no_dv).then(|| p.temp_rpu.clone());
+    let json = (live && a.has_hdr10plus && !opts.no_hdr10plus).then(|| p.temp_hdr10plus.clone());
     let l5 = scale_target(opts, a).map(|s| s.factors());
-    let thread = thread::spawn(move || {
-        let meta = crate::inject::Metadata::load(rpu.as_deref(), json.as_deref(), l5)?;
-        let out = std::io::BufWriter::with_capacity(1 << 20, mux_in);
-        let mut stats = crate::inject::run(enc_out, out, &meta, info)?;
-        stats.converted_p7 = meta.converted_p7;
-        Ok(stats)
-    });
-    Ok(Live { mux, thread, mux_log })
+    let handle = thread::Builder::new().name(format!("kodowanie-{slot}")).spawn(move || {
+        struct Active;
+        impl Drop for Active {
+            fn drop(&mut self) {
+                proc::encoding_end();
+            }
+        }
+        proc::encoding_begin();
+        let _active = Active;
+        let inject = if live {
+            Some(crate::av::InjectCfg { meta: crate::inject::Metadata::load(rpu.as_deref(), json.as_deref(), l5)? })
+        } else {
+            None
+        };
+        crate::av::run(&job, crate::av::Hooks { inject, stop: None })
+    })?;
+    Ok(Running { job: handle, name: a.filename.clone(), live, output: part, final_out: p.output.clone(), pf })
 }
 
-/// Koniec trybu w locie: wątek wstrzykujący, potem ffmpeg składający plik (kończy się po EOF).
-fn finish_live(name: &str, live: Live) -> bool {
-    let Live { mut mux, thread, mux_log } = live;
-    let injected = thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("wątek wstrzykujący przerwany")));
-    let mux_ok = mux.wait().map(|s| s.success()).unwrap_or(false);
-    proc::unregister(mux.id());
-    crate::log::append_file(&format!("ffmpeg — składanie pliku (w locie) {name}"), &mux_log);
-    let ok = match injected {
-        Ok(st) => {
-            let dv = if st.rpus > 0 { format!(", Dolby Vision poziom {}", st.dv_level) } else { String::new() };
-            let h10 = if st.hdr10plus > 0 { ", HDR10+" } else { "" };
-            plog!(" -> [{name}] metadane w locie: {} klatek {}x{}{dv}{h10}", st.frames, st.width, st.height);
-            if st.converted_p7 {
-                plog!("    RPU profilu 7 przerobione na 8.1 (kodowana jest tylko warstwa bazowa)");
-            }
-            for w in st.warnings() {
-                plog!("    UWAGA: {w}");
-            }
-            true
-        }
-        Err(e) => {
-            plog!(" -> [{name}] BŁĄD wstrzykiwania DV/HDR10+: {e:#}");
-            false
-        }
-    };
-    if !mux_ok {
-        plog!(" -> [{name}] BŁĄD ffmpeg składającego plik:");
-        if let Ok(log) = fs::read_to_string(&mux_log) {
-            let lines: Vec<&str> = log.lines().collect();
-            for l in &lines[lines.len().saturating_sub(12)..] {
-                plog!("    {l}");
-            }
-        }
-    }
-    ok && mux_ok
-}
-
-fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
-    proc::unregister(r.child.id());
-    crate::log::append_file(&format!("ffmpeg — kodowanie {} ({status})", r.name), &r.log);
-    let live = r.live.is_some();
-    let live_ok = match r.live.take() {
-        Some(l) => finish_live(&r.name, l),
-        None => true,
-    };
-
+fn finish(opts: &Opts, r: Running, panel: &Panel) {
+    let res = r.job.join().unwrap_or_else(|_| Err(anyhow::anyhow!("wątek kodowania zakończył się awarią")));
     if proc::cancelled() {
-        // Częściowy plik nie może zostać uznany za ukończony etap przy resume.
+        // Częściowy plik nie może zostać uznany za ukończony.
         let _ = fs::remove_file(&r.output);
         panel.set(&r.name, State::Waiting, "Przerwano");
         return;
     }
-    let check = if status.success() && live_ok { result_check(opts, &r.output, &r.pf) } else { Err(String::new()) };
+    let check = match &res {
+        Ok(rep) => {
+            if crate::log::full() {
+                crate::log::file_line(&format!("[kodowanie] {} — {} klatek; komunikaty bibliotek:\n{}", r.name, rep.frames, rep.log.join("\n")));
+            }
+            if let Some(st) = &rep.inject {
+                let dv = if st.rpus > 0 { format!(", Dolby Vision poziom {}", st.dv_level) } else { String::new() };
+                let h10 = if st.hdr10plus > 0 { ", HDR10+" } else { "" };
+                plog!(" -> [{}] metadane w locie: {} klatek {}x{}{dv}{h10}", r.name, st.frames, st.width, st.height);
+                if st.converted_p7 {
+                    plog!("    RPU profilu 7 przerobione na 8.1 (kodowana jest tylko warstwa bazowa)");
+                }
+                for w in st.warnings() {
+                    plog!("    UWAGA: {w}");
+                }
+            }
+            result_check(opts, &r.output, &r.pf)
+        }
+        Err(_) => Err(String::new()),
+    };
     if check.is_ok() {
         // Gotowy plik wynikowy dopiero po pełnym zapisie (.part → nazwa docelowa).
         let fin = &r.final_out;
         if let Err(e) = fs::rename(&r.output, fin) {
             panel.set(&r.name, State::Error, format!("nie można zapisać {}: {e}", fin.display()));
-            plog!(" -> ffmpeg [{}]: BŁĄD zapisu pliku wynikowego: {e}", r.name);
+            plog!(" -> [{}]: BŁĄD zapisu pliku wynikowego: {e}", r.name);
             return;
         }
-        let note = if live { "Zakodowano z DV/HDR10+ w locie do pliku wynikowego" } else { "Zakodowano od razu do pliku wynikowego" };
+        let note = if r.live { "Zakodowano z DV/HDR10+ w locie do pliku wynikowego" } else { "Zakodowano od razu do pliku wynikowego" };
         panel.set(&r.name, State::NvencDone, note);
-        plog!(" -> ffmpeg [{}]: ZAKOŃCZONY + PLIK OK", r.name);
-    } else {
-        let why = check.err().filter(|w| !w.is_empty());
-        panel.set(
-            &r.name,
-            State::Error,
-            match &why {
-                Some(w) => format!("{} — plik odrzucony: {w}", opts.engine.label()),
-                None => format!("{} nie utworzył poprawnego pliku ({status})", opts.engine.label()),
-            },
-        );
-        match &why {
-            Some(w) => plog!(" -> ffmpeg [{}]: zakończony ({status}), ale plik odrzucony: {w}", r.name),
-            None => plog!(" -> ffmpeg [{}]: BŁĄD kodowania ({status})", r.name),
-        }
-        if let Ok(log) = fs::read_to_string(&r.log) {
-            let lines: Vec<&str> = log.lines().collect();
-            let from = lines.len().saturating_sub(12);
-            for l in &lines[from..] {
-                plog!("    {l}");
-            }
-        }
-        if why.is_some() && status.success() {
-            // ffmpeg skończył bez błędu — plik zostaje do sprawdzenia (nie jest uznawany za gotowy).
+        plog!(" -> [{}]: ZAKOŃCZONY + PLIK OK", r.name);
+        return;
+    }
+    match (&res, check.err().filter(|w| !w.is_empty())) {
+        (Ok(_), Some(why)) => {
+            panel.set(&r.name, State::Error, format!("{} — plik odrzucony: {why}", opts.engine.label()));
+            plog!(" -> [{}]: kodowanie zakończone, ale plik odrzucony: {why}", r.name);
+            // Kodowanie skończyło się bez błędu — plik zostaje do sprawdzenia (nie jest uznawany za gotowy).
             let keep = PathBuf::from(format!("{}.odrzucony", r.output.display()));
             if fs::rename(&r.output, &keep).is_ok() {
                 plog!("    plik zostawiony do sprawdzenia: {}", keep.display());
             }
-        } else {
+        }
+        (res, _) => {
+            let msg = res.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default();
+            let first = msg.lines().next().unwrap_or("błąd kodowania").to_string();
+            panel.set(&r.name, State::Error, format!("{}: {first}", opts.engine.label()));
+            plog!(" -> [{}]: BŁĄD kodowania:", r.name);
+            for l in msg.lines() {
+                plog!("    {l}");
+            }
             let _ = fs::remove_file(&r.output);
         }
     }
@@ -840,37 +696,21 @@ fn finish(opts: &Opts, mut r: Running, status: ExitStatus, panel: &Panel) {
 fn reap(opts: &Opts, running: &mut Vec<Running>, panel: &Panel) {
     let mut i = 0;
     while i < running.len() {
-        match running[i].child.try_wait() {
-            Ok(Some(status)) => {
-                let r = running.remove(i);
-                finish(opts, r, status, panel);
-            }
-            Ok(None) => i += 1,
-            Err(_) => {
-                running.remove(i);
-            }
+        if running[i].job.is_finished() {
+            let r = running.remove(i);
+            finish(opts, r, panel);
+        } else {
+            i += 1;
         }
     }
 }
 
-/// Przerwanie: zabijamy ffmpeg i kasujemy niedokończone pliki.
+/// Przerwanie: wątki kodowania same kończą pracę (sprawdzają znacznik przerwania); kasujemy niedokończone pliki.
 fn abort_all(running: &mut Vec<Running>, panel: &Panel) {
-    for r in running.iter_mut() {
-        let _ = r.child.kill();
-        let _ = r.child.wait();
-        proc::unregister(r.child.id());
-        if let Some(mut l) = r.live.take() {
-            let _ = l.mux.kill();
-            let _ = l.mux.wait();
-            proc::unregister(l.mux.id());
-            let _ = l.thread.join();
-        }
+    for r in running.drain(..) {
+        let _ = r.job.join();
         let _ = fs::remove_file(&r.output);
         panel.set(&r.name, State::Waiting, "Przerwano");
-    }
-    running.clear();
-    if let Ok(mut g) = PIDS.lock() {
-        g.clear();
     }
 }
 
@@ -903,7 +743,7 @@ pub fn run_stage(opts: &Opts, rt: &Runtime, files: &[Analysis], panel: &Panel) {
         let slot = running.len() + 1;
         match start(opts, rt, a, slot, panel) {
             Ok(r) => {
-                plog!(" -> [{}] PID {} — start", a.filename, r.child.id());
+                plog!(" -> [{}] start (koder {slot}/2)", a.filename);
                 running.push(r);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
@@ -911,7 +751,7 @@ pub fn run_stage(opts: &Opts, rt: &Runtime, files: &[Analysis], panel: &Panel) {
                 panel.set(&a.filename, State::Error, e.to_string());
             }
             Err(e) => {
-                panel.set(&a.filename, State::Error, format!("nie można uruchomić ffmpeg: {e}"));
+                panel.set(&a.filename, State::Error, format!("nie można rozpocząć kodowania: {e}"));
             }
         }
         thread::sleep(Duration::from_millis(300));

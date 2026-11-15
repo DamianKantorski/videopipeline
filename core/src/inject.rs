@@ -19,7 +19,6 @@ use dolby_vision::rpu::{dovi_rpu::DoviRpu, ConversionMode};
 use hdr10plus::metadata_json::{Hdr10PlusJsonMetadata, MetadataJsonRoot};
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
     path::Path,
 };
 
@@ -92,15 +91,6 @@ impl Metadata {
         };
         Ok(Metadata { rpus, hdr10plus, dv_profile, converted_p7 })
     }
-}
-
-/// Parametry strumienia wynikowego.
-#[derive(Clone, Copy)]
-pub struct StreamInfo {
-    /// Liczba klatek na sekundę jako ułamek (np. 24000/1001).
-    pub fps: (u64, u64),
-    /// Źródło HLG (zgodność warstwy bazowej DV 4 zamiast 1 — PQ).
-    pub hlg: bool,
 }
 
 #[derive(Debug, Default)]
@@ -285,7 +275,6 @@ pub(crate) fn starts_au(t: u8) -> bool {
     matches!(t, 32..=35 | 39 | 41..=44 | 48..=55)
 }
 
-const NAL_AUD: u8 = 35;
 const NAL_EOS: u8 = 36;
 pub(crate) const NAL_UNSPEC62: u8 = 62;
 
@@ -333,64 +322,8 @@ impl Reorder {
 // Matroska (minimalny zapis strumieniowy)
 // ---------------------------------------------------------------------------------------------
 
-fn put_id(out: &mut Vec<u8>, id: u32) {
-    let b = id.to_be_bytes();
-    let skip = b.iter().position(|&x| x != 0).unwrap_or(3);
-    out.extend_from_slice(&b[skip..]);
-}
-
-fn put_size(out: &mut Vec<u8>, n: u64) {
-    for len in 1..=8u32 {
-        if n < (1u64 << (7 * len)) - 1 {
-            let v = n | (1u64 << (7 * len));
-            out.extend_from_slice(&v.to_be_bytes()[(8 - len as usize)..]);
-            return;
-        }
-    }
-    panic!("element Matroska za duży");
-}
-
-fn elem(out: &mut Vec<u8>, id: u32, data: &[u8]) {
-    put_id(out, id);
-    put_size(out, data.len() as u64);
-    out.extend_from_slice(data);
-}
-
-fn elem_uint(out: &mut Vec<u8>, id: u32, v: u64) {
-    let b = v.to_be_bytes();
-    let skip = b.iter().position(|&x| x != 0).unwrap_or(7);
-    elem(out, id, &b[skip..]);
-}
-
-const MKV_EBML: u32 = 0x1A45DFA3;
-const MKV_SEGMENT: u32 = 0x18538067;
-const MKV_INFO: u32 = 0x1549A966;
-const MKV_TIMESTAMP_SCALE: u32 = 0x2AD7B1;
-const MKV_MUXING_APP: u32 = 0x4D80;
-const MKV_WRITING_APP: u32 = 0x5741;
-const MKV_TRACKS: u32 = 0x1654AE6B;
-const MKV_TRACK_ENTRY: u32 = 0xAE;
-const MKV_CLUSTER: u32 = 0x1F43B675;
-const MKV_TIMESTAMP: u32 = 0xE7;
-const MKV_SIMPLE_BLOCK: u32 = 0xA3;
-
-/// Rekord konfiguracji Dolby Vision (dvcC/dvvC, 24 bajty) — jak ff_isom_put_dvcc_dvvc.
-fn dovi_config(profile: u8, level: u8, compat: u8) -> [u8; 24] {
-    let mut r = [0u8; 24];
-    r[0] = 1; // dv_version_major
-    r[1] = 0; // dv_version_minor
-    // 7 bitów profilu, 6 poziomu, rpu=1, el=0, bl=1, 4 bity zgodności, 2 bity kompresji (0)
-    let v: u32 = ((profile as u32 & 0x7f) << 25)
-        | ((level as u32 & 0x3f) << 19)
-        | (1 << 18)
-        | (1 << 16)
-        | ((compat as u32 & 0x0f) << 12);
-    r[2..6].copy_from_slice(&v.to_be_bytes());
-    r
-}
-
 /// Poziom DV z liczby pikseli na sekundę i szerokości (tabela jak w FFmpeg / mkvmerge).
-fn dovi_level(width: u32, height: u32, fps: (u64, u64)) -> u8 {
+pub(crate) fn dovi_level(width: u32, height: u32, fps: (u64, u64)) -> u8 {
     const LEVELS: [(u64, u32); 13] = [
         (1280 * 720 * 24, 1280),
         (1280 * 720 * 30, 1280),
@@ -414,118 +347,6 @@ fn dovi_level(width: u32, height: u32, fps: (u64, u64)) -> u8 {
         .unwrap_or(LEVELS.len() as u8)
 }
 
-struct Mkv<W: Write> {
-    w: W,
-    cluster: Vec<u8>,
-    cluster_ts: i64,
-    cluster_frames: usize,
-}
-
-impl<W: Write> Mkv<W> {
-    fn start(
-        mut w: W,
-        codec_private: &[u8],
-        width: u32,
-        height: u32,
-        fps: (u64, u64),
-        dovi: Option<(u8, [u8; 24])>,
-    ) -> Result<Self> {
-        let mut h = vec![];
-        let mut ebml = vec![];
-        elem_uint(&mut ebml, 0x4286, 1); // EBMLVersion
-        elem_uint(&mut ebml, 0x42F7, 1); // EBMLReadVersion
-        elem_uint(&mut ebml, 0x42F2, 4); // EBMLMaxIDLength
-        elem_uint(&mut ebml, 0x42F3, 8); // EBMLMaxSizeLength
-        elem(&mut ebml, 0x4282, b"matroska"); // DocType
-        elem_uint(&mut ebml, 0x4287, 4); // DocTypeVersion
-        elem_uint(&mut ebml, 0x4285, 2); // DocTypeReadVersion
-        elem(&mut h, MKV_EBML, &ebml);
-        // Segment o nieznanej długości (zapis do potoku).
-        put_id(&mut h, MKV_SEGMENT);
-        h.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-
-        let mut info = vec![];
-        elem_uint(&mut info, MKV_TIMESTAMP_SCALE, 1_000_000); // 1 ms, jak mkvmerge
-        elem(&mut info, MKV_MUXING_APP, b"videopipeline");
-        elem(&mut info, MKV_WRITING_APP, b"videopipeline");
-        elem(&mut h, MKV_INFO, &info);
-
-        let mut t = vec![];
-        elem_uint(&mut t, 0xD7, 1); // TrackNumber
-        elem_uint(&mut t, 0x73C5, 1); // TrackUID
-        elem_uint(&mut t, 0x83, 1); // TrackType: wideo
-        elem_uint(&mut t, 0x9C, 0); // FlagLacing
-        elem(&mut t, 0x86, b"V_MPEGH/ISO/HEVC");
-        elem(&mut t, 0x63A2, codec_private);
-        elem_uint(&mut t, 0x23E383, 1_000_000_000 * fps.1 / fps.0.max(1)); // DefaultDuration (ns)
-        let mut video = vec![];
-        elem_uint(&mut video, 0xB0, width as u64);
-        elem_uint(&mut video, 0xBA, height as u64);
-        elem(&mut t, 0xE0, &video);
-        if let Some((profile, rec)) = dovi {
-            let mut map = vec![];
-            let kind: &[u8; 4] = if profile > 7 { b"dvvC" } else { b"dvcC" };
-            elem_uint(&mut map, 0x41E7, u32::from_be_bytes(*kind) as u64); // BlockAddIDType
-            elem(&mut map, 0x41ED, &rec); // BlockAddIDExtraData
-            elem(&mut t, 0x41E4, &map); // BlockAdditionMapping
-        }
-        let mut tracks = vec![];
-        elem(&mut tracks, MKV_TRACK_ENTRY, &t);
-        elem(&mut h, MKV_TRACKS, &tracks);
-        w.write_all(&h)?;
-        Ok(Mkv { w, cluster: vec![], cluster_ts: 0, cluster_frames: 0 })
-    }
-
-    fn flush_cluster(&mut self) -> Result<()> {
-        if self.cluster_frames == 0 {
-            return Ok(());
-        }
-        let mut body = vec![];
-        elem_uint(&mut body, MKV_TIMESTAMP, self.cluster_ts.max(0) as u64);
-        body.extend_from_slice(&self.cluster);
-        let mut head = vec![];
-        put_id(&mut head, MKV_CLUSTER);
-        put_size(&mut head, body.len() as u64);
-        self.w.write_all(&head)?;
-        self.w.write_all(&body)?;
-        self.cluster.clear();
-        self.cluster_frames = 0;
-        Ok(())
-    }
-
-    fn frame(&mut self, pts_ms: i64, key: bool, payload: &[u8]) -> Result<()> {
-        let rel = pts_ms - self.cluster_ts;
-        // Nowy klaster: na klatce kluczowej, co ~2 s / 8 MB albo gdy znacznik wyszedłby poza int16.
-        if self.cluster_frames > 0
-            && (key || rel.abs() > 2000 || self.cluster.len() > 8 << 20 || !(-32768..=32767).contains(&rel))
-        {
-            self.flush_cluster()?;
-        }
-        if self.cluster_frames == 0 {
-            self.cluster_ts = pts_ms.max(0);
-        }
-        let rel = (pts_ms - self.cluster_ts) as i16;
-        let mut block = Vec::with_capacity(payload.len() + 4);
-        block.push(0x81); // numer ścieżki 1
-        block.extend_from_slice(&rel.to_be_bytes());
-        block.push(if key { 0x80 } else { 0x00 });
-        block.extend_from_slice(payload);
-        elem(&mut self.cluster, MKV_SIMPLE_BLOCK, &block);
-        self.cluster_frames += 1;
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<W> {
-        self.flush_cluster()?;
-        self.w.flush()?;
-        Ok(self.w)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Wstrzykiwacz
-// ---------------------------------------------------------------------------------------------
-
 struct Au {
     nals: Vec<Vec<u8>>,
     has_vcl: bool,
@@ -542,20 +363,6 @@ struct Queued {
     id: u64,
     pres: Option<u64>,
     au: Au,
-}
-
-struct Injector<'m, W: Write> {
-    meta: &'m Metadata,
-    info: StreamInfo,
-    pp: PocParser,
-    /// Parametry z początku strumienia (VPS/SPS/PPS) — CodecPrivate.
-    headers: Vec<Vec<u8>>,
-    reorder: Reorder,
-    queue: VecDeque<Queued>,
-    next_id: u64,
-    out: Option<W>,
-    mkv: Option<Mkv<W>>,
-    stats: Stats,
 }
 
 fn set<T: Clone>(v: &mut Vec<Option<T>>, id: usize, x: T) {
@@ -658,181 +465,7 @@ impl PocParser {
 
 }
 
-impl<W: Write> Injector<'_, W> {
-    fn nal(&mut self, au: &mut Au, nal: Vec<u8>) -> Result<()> {
-        if nal.len() < 2 || nal[0] & 0x80 != 0 {
-            return Ok(()); // pusty albo uszkodzony
-        }
-        let t = nal_type(&nal);
-        if ((nal[0] & 1) << 5) | (nal[1] >> 3) != 0 {
-            // nuh_layer_id > 0 (warstwy dodatkowe) — przepisujemy bez analizy
-            au.nals.push(nal);
-            return Ok(());
-        }
-        if is_vcl(t) {
-            let first_slice = nal.get(2).is_some_and(|b| b & 0x80 != 0);
-            if first_slice && au.has_vcl {
-                self.finish_au(std::mem::replace(au, Au::new()))?;
-            }
-            if first_slice {
-                let (poc, new_seq) = self.pp.slice_poc(&nal)?;
-                if self.stats.width == 0 {
-                    self.stats.width = self.pp.width;
-                    self.stats.height = self.pp.height;
-                }
-                let id = self.next_id;
-                self.next_id += 1;
-                self.reorder.add(id, poc, new_seq);
-                au.key = is_irap(t);
-                au.has_vcl = true;
-                // numer klatki zapamiętany w kolejce przy zamknięciu klatki
-                self.queue.push_back(Queued { id, pres: None, au: Au::new() });
-            }
-            au.nals.push(nal);
-            return Ok(());
-        }
-        if starts_au(t) && au.has_vcl {
-            self.finish_au(std::mem::replace(au, Au::new()))?;
-        }
-        self.pp.param(t, &nal)?;
-        // CodecPrivate: zestaw parametrów sprzed pierwszej klatki.
-        if (32..=34).contains(&t) && self.next_id == 0 {
-            self.headers.push(nal.clone());
-        }
-        // AUD zbędne w Matroska; istniejące RPU zastępujemy nowymi.
-        if t == NAL_AUD || (t == NAL_UNSPEC62 && !self.meta.rpus.is_empty()) {
-            return Ok(());
-        }
-        au.nals.push(nal);
-        Ok(())
-    }
-
-    /// Klatka zamknięta: dane do kolejki, zapis wszystkiego, co ma już numer wyświetlania.
-    fn finish_au(&mut self, au: Au) -> Result<()> {
-        if !au.has_vcl {
-            return Ok(()); // same parametry bez obrazu (koniec strumienia)
-        }
-        let slot = self.queue.back_mut().context("klatka bez nagłówka slice'a")?;
-        slot.au = au;
-        self.drain(false)
-    }
-
-    fn drain(&mut self, all: bool) -> Result<()> {
-        if all {
-            self.reorder.flush();
-        }
-        for (id, pres) in std::mem::take(&mut self.reorder.assigned) {
-            let front = self.queue.front().map(|q| q.id).unwrap_or(0);
-            if let Some(q) = self.queue.get_mut((id - front) as usize) {
-                q.pres = Some(pres);
-            }
-        }
-        // Ostatnia klatka w kolejce może być jeszcze otwarta (bez danych) — wtedy czekamy.
-        while self.queue.front().is_some_and(|q| q.pres.is_some() && q.au.has_vcl) {
-            let q = self.queue.pop_front().unwrap();
-            self.write(q.pres.unwrap(), q.au)?;
-        }
-        Ok(())
-    }
-
-    fn write(&mut self, pres: u64, au: Au) -> Result<()> {
-        let meta = self.meta;
-        if self.mkv.is_none() {
-            let w = self.out.take().context("zapis po zakończeniu")?;
-            let mut cp = vec![];
-            for h in &self.headers {
-                cp.extend_from_slice(&[0, 0, 0, 1]);
-                cp.extend_from_slice(h);
-            }
-            if cp.is_empty() {
-                bail!("strumień bez VPS/SPS/PPS przed pierwszą klatką");
-            }
-            let dovi = (!meta.rpus.is_empty()).then(|| {
-                let level = dovi_level(self.stats.width, self.stats.height, self.info.fps);
-                self.stats.dv_level = level;
-                let compat = match meta.dv_profile {
-                    5 => 0,
-                    _ if self.info.hlg => 4,
-                    _ => 1,
-                };
-                (meta.dv_profile, dovi_config(meta.dv_profile, level, compat))
-            });
-            self.mkv = Some(Mkv::start(w, &cp, self.stats.width, self.stats.height, self.info.fps, dovi)?);
-        }
-
-        let pick = |n: usize| (n > 0).then(|| (pres as usize).min(n - 1));
-        let mut nals = au.nals;
-        if let Some(i) = pick(meta.hdr10plus.len()) {
-            let sei = hdr10plus::hevc::encode_hevc_from_json(&meta.hdr10plus[i], true)
-                .with_context(|| format!("SEI HDR10+ dla klatki {pres}"))?;
-            let at = nals.iter().position(|n| is_vcl(nal_type(n))).unwrap_or(0);
-            nals.insert(at, sei);
-        }
-        if let Some(i) = pick(meta.rpus.len()) {
-            let rpu = meta.rpus[i].write_hevc_unspec62_nalu().with_context(|| format!("RPU dla klatki {pres}"))?;
-            nals.push(rpu); // RPU zawsze ostatnie w klatce (jak dovi_tool — tego oczekuje FFmpeg)
-        }
-        let mut payload = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
-        for n in &nals {
-            payload.extend_from_slice(&[0, 0, 0, 1]);
-            payload.extend_from_slice(n);
-        }
-        let (num, den) = self.info.fps;
-        let pts_ms = ((pres as u128 * 1000 * den as u128 + num as u128 / 2) / num.max(1) as u128) as i64;
-        self.mkv.as_mut().unwrap().frame(pts_ms, au.key, &payload)?;
-        self.stats.frames += 1;
-        Ok(())
-    }
-}
-
-/// Strumień Annex-B (kody startowe 00 00 01 / 00 00 00 01) → kolejne NAL bez kodów startowych.
-pub(crate) fn split_annexb<R: Read>(input: &mut R, mut f: impl FnMut(Vec<u8>) -> Result<()>) -> Result<()> {
-    let mut buf: Vec<u8> = Vec::with_capacity(4 << 20);
-    let mut chunk = vec![0u8; 1 << 20];
-    // Pozycja początku bieżącego NAL (za kodem startowym) i miejsce, od którego szukamy dalej.
-    let mut nal_start: Option<usize> = None;
-    let mut scan = 0usize;
-    loop {
-        let n = input.read(&mut chunk)?;
-        let eof = n == 0;
-        buf.extend_from_slice(&chunk[..n]);
-        let mut i = scan.max(2);
-        while i < buf.len() {
-            if buf[i] == 1 && buf[i - 1] == 0 && buf[i - 2] == 0 {
-                if let Some(s) = nal_start {
-                    let mut end = i - 2;
-                    while end > s && buf[end - 1] == 0 {
-                        end -= 1; // zera końcowe i pierwsze zero 4-bajtowego kodu startowego
-                    }
-                    f(buf[s..end].to_vec())?;
-                }
-                nal_start = Some(i + 1);
-            }
-            i += 1;
-        }
-        // Zostawiamy w buforze tylko nieskończony NAL.
-        let keep = nal_start.unwrap_or(buf.len().saturating_sub(2));
-        if keep > 0 {
-            buf.drain(..keep);
-            nal_start = nal_start.map(|s| s - keep);
-        }
-        scan = buf.len();
-        if eof {
-            break;
-        }
-    }
-    if let Some(s) = nal_start {
-        let mut end = buf.len();
-        while end > s && buf[end - 1] == 0 {
-            end -= 1;
-        }
-        f(buf[s..end].to_vec())?;
-    }
-    Ok(())
-}
-
 /// NAL z bufora Annex-B w pamięci (np. pakiet z kontenera MPEG-TS).
-#[cfg_attr(not(feature = "libav"), allow(dead_code))]
 pub(crate) fn annexb_nals(buf: &[u8]) -> Vec<&[u8]> {
     let mut out = vec![];
     let mut start: Option<usize> = None;
@@ -862,35 +495,154 @@ pub(crate) fn annexb_nals(buf: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Czyta Annex-B HEVC z `input`, dokleja metadane i zapisuje Matroska do `output`.
-pub fn run<R: Read, W: Write>(mut input: R, output: W, meta: &Metadata, info: StreamInfo) -> Result<Stats> {
-    let mut inj = Injector {
-        meta,
-        info,
-        pp: PocParser::new(),
-        headers: vec![],
-        reorder: Reorder::new(),
-        queue: VecDeque::new(),
-        next_id: 0,
-        out: Some(output),
-        mkv: None,
-        stats: Stats { rpus: meta.rpus.len(), hdr10plus: meta.hdr10plus.len(), ..Default::default() },
-    };
-    let mut au = Au::new();
-    split_annexb(&mut input, |nal| inj.nal(&mut au, nal))?;
-    inj.finish_au(au)?;
-    inj.drain(true)?;
-    if !inj.queue.is_empty() {
-        bail!("{} klatek bez danych na końcu strumienia", inj.queue.len());
+/// Dolby Vision RPU i SEI HDR10+ doklejane do pakietów kodera HEVC (jeden pakiet = jedna klatka,
+/// Annex-B). Klatki dostają metadane według kolejności wyświetlania (POC), a pakiety wychodzą w tej
+/// samej kolejności, w jakiej weszły — z opóźnieniem potrzebnym na ustalenie kolejności wyświetlania.
+pub struct PacketInjector {
+    meta: Metadata,
+    pp: PocParser,
+    reorder: Reorder,
+    queue: VecDeque<Queued>,
+    next_id: u64,
+    /// NAL bez obrazu z pakietu bez klatki — dołączane do następnej klatki.
+    carry: Vec<Vec<u8>>,
+    pub stats: Stats,
+}
+
+impl PacketInjector {
+    pub fn new(meta: Metadata) -> Self {
+        let stats = Stats { rpus: meta.rpus.len(), hdr10plus: meta.hdr10plus.len(), converted_p7: meta.converted_p7, ..Default::default() };
+        PacketInjector { meta, pp: PocParser::new(), reorder: Reorder::new(), queue: VecDeque::new(), next_id: 0, carry: vec![], stats }
     }
-    let stats = std::mem::take(&mut inj.stats);
-    match inj.mkv.take() {
-        Some(m) => {
-            m.finish()?;
+
+    /// (profil, zgodność warstwy bazowej) do rekordu konfiguracji DV — gdy są RPU.
+    /// Wynik kodera ma znaczniki PQ: zgodność 1 (HDR10); profil 5 nie ma zgodnej warstwy bazowej.
+    pub fn dovi(&self) -> Option<(u8, u8)> {
+        (!self.meta.rpus.is_empty()).then_some((self.meta.dv_profile, if self.meta.dv_profile == 5 { 0 } else { 1 }))
+    }
+
+    /// Zestawy parametrów z nagłówka kodera (VPS/SPS/PPS, Annex-B albo hvcC).
+    pub fn headers(&mut self, extradata: &[u8]) -> Result<()> {
+        if extradata.len() >= 23 && extradata[0] == 1 {
+            let mut i = 23;
+            for _ in 0..extradata[22] {
+                let Some(h) = extradata.get(i..i + 3) else { break };
+                let count = u16::from_be_bytes([h[1], h[2]]) as usize;
+                i += 3;
+                for _ in 0..count {
+                    let Some(l) = extradata.get(i..i + 2) else { break };
+                    let l = u16::from_be_bytes([l[0], l[1]]) as usize;
+                    if let Some(n) = extradata.get(i + 2..i + 2 + l) {
+                        if n.len() >= 2 {
+                            self.pp.param(nal_type(n), n)?;
+                        }
+                    }
+                    i += 2 + l;
+                }
+            }
+            return Ok(());
         }
-        None => bail!("brak klatek wideo na wejściu"),
+        for n in annexb_nals(extradata) {
+            if n.len() >= 2 {
+                self.pp.param(nal_type(n), n)?;
+            }
+        }
+        Ok(())
     }
-    Ok(stats)
+
+    /// Pakiet kodera → pakiety gotowe do zapisu (z metadanymi), w kolejności wejścia.
+    pub fn push(&mut self, packet: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let mut au = Au::new();
+        au.nals = std::mem::take(&mut self.carry);
+        let mut slot: Option<u64> = None;
+        for nal in annexb_nals(packet) {
+            if nal.len() < 2 || nal[0] & 0x80 != 0 {
+                continue;
+            }
+            let t = nal_type(nal);
+            if ((nal[0] & 1) << 5) | (nal[1] >> 3) != 0 {
+                au.nals.push(nal.to_vec()); // warstwy dodatkowe — bez analizy
+                continue;
+            }
+            if is_vcl(t) {
+                if nal.get(2).is_some_and(|b| b & 0x80 != 0) && slot.is_none() {
+                    let (poc, new_seq) = self.pp.slice_poc(nal)?;
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    self.reorder.add(id, poc, new_seq);
+                    slot = Some(id);
+                    au.key = is_irap(t);
+                    au.has_vcl = true;
+                }
+                au.nals.push(nal.to_vec());
+                continue;
+            }
+            self.pp.param(t, nal)?;
+            // Istniejące RPU zastępujemy nowymi.
+            if t == NAL_UNSPEC62 && !self.meta.rpus.is_empty() {
+                continue;
+            }
+            au.nals.push(nal.to_vec());
+        }
+        match slot {
+            Some(id) => self.queue.push_back(Queued { id, pres: None, au }),
+            None => {
+                self.carry = au.nals;
+                bail!("pakiet kodera bez klatki obrazu");
+            }
+        }
+        self.drain(false)
+    }
+
+    /// Koniec strumienia: pozostałe pakiety.
+    pub fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        let out = self.drain(true)?;
+        if !self.queue.is_empty() {
+            bail!("{} klatek bez numeru wyświetlania na końcu strumienia", self.queue.len());
+        }
+        Ok(out)
+    }
+
+    fn drain(&mut self, all: bool) -> Result<Vec<Vec<u8>>> {
+        if all {
+            self.reorder.flush();
+        }
+        for (id, pres) in std::mem::take(&mut self.reorder.assigned) {
+            let front = self.queue.front().map(|q| q.id).unwrap_or(0);
+            if let Some(q) = id.checked_sub(front).and_then(|i| self.queue.get_mut(i as usize)) {
+                q.pres = Some(pres);
+            }
+        }
+        let mut out = vec![];
+        while self.queue.front().is_some_and(|q| q.pres.is_some()) {
+            let q = self.queue.pop_front().unwrap();
+            out.push(self.payload(q.pres.unwrap(), q.au)?);
+        }
+        Ok(out)
+    }
+
+    fn payload(&mut self, pres: u64, au: Au) -> Result<Vec<u8>> {
+        let meta = &self.meta;
+        let pick = |n: usize| (n > 0).then(|| (pres as usize).min(n - 1));
+        let mut nals = au.nals;
+        if let Some(i) = pick(meta.hdr10plus.len()) {
+            let sei = hdr10plus::hevc::encode_hevc_from_json(&meta.hdr10plus[i], true)
+                .with_context(|| format!("SEI HDR10+ dla klatki {pres}"))?;
+            let at = nals.iter().position(|n| is_vcl(nal_type(n))).unwrap_or(0);
+            nals.insert(at, sei);
+        }
+        if let Some(i) = pick(meta.rpus.len()) {
+            let rpu = meta.rpus[i].write_hevc_unspec62_nalu().with_context(|| format!("RPU dla klatki {pres}"))?;
+            nals.push(rpu); // RPU zawsze ostatnie w klatce (jak dovi_tool — tego oczekuje FFmpeg)
+        }
+        let mut payload = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
+        for n in &nals {
+            payload.extend_from_slice(&[0, 0, 0, 1]);
+            payload.extend_from_slice(n);
+        }
+        self.stats.frames += 1;
+        Ok(payload)
+    }
 }
 
 #[cfg(test)]
@@ -918,8 +670,6 @@ mod tests {
 
     #[test]
     fn dovi_record_and_level() {
-        let r = dovi_config(8, 6, 1);
-        assert_eq!(&r[..6], &[1, 0, 0x10, 0x35, 0x10, 0x00]);
         assert_eq!(dovi_level(3840, 2160, (24000, 1001)), 6);
         assert_eq!(dovi_level(1920, 1080, (24, 1)), 3);
         assert_eq!(dovi_level(1280, 720, (24000, 1001)), 1);
@@ -947,11 +697,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vint_sizes() {
-        let mut v = vec![];
-        put_size(&mut v, 5);
-        put_size(&mut v, 200);
-        assert_eq!(v, [0x85, 0x40, 0xC8]);
-    }
 }

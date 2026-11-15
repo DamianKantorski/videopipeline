@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Buduje dist/VideoPipeline-<wersja>-x86_64_v3.AppImage z dołączonymi narzędziami:
-#   ffmpeg (NVENC/NVDEC/CUDA-LLVM statycznie; Intel QSV/VAAPI z libva/libvpl linkowanymi dynamicznie),
-#   biblioteki dynamiczne libavformat/libavcodec/libavutil (odczyt informacji o plikach zamiast ffprobe),
+#   biblioteki dynamiczne FFmpeg — libavformat, libavcodec, libavfilter, libavutil, libswscale, libswresample
+#   (NVENC/NVDEC/CUDA-LLVM; Intel QSV/VAAPI z libva/libvpl; libplacebo) — na nich działa cały program,
 #   biblioteka MediaInfo (libmediainfo, okienko F2) oraz odtwarzacz mpv (F3, budowany ze źródeł; MPV_VERSION)
 #   i terminal videopipeline-term (Alacritty ze źródeł z ikoną VideoPipeline; ALACRITTY_VERSION).
 # Kod własny (videopipeline, biblioteka core, ffmpeg) jest kompilowany
@@ -65,25 +65,8 @@ done
 [[ -n "$MEDIAINFO_SO" ]] || fail "brak libmediainfo.so.0 (pakiet libmediainfo0v5)"
 pkg-config --exists dav1d || fail "brak libdav1d-dev (pkg-config dav1d)"
 
-# --------------------------------------------------------------------------- 1. aplikacja
-# Biblioteki dynamiczne FFmpeg do odczytu informacji o plikach (zamiast ffprobe) — muszą być przed
-# kompilacją programu (funkcja `libav`, ffmpeg-sys-next czyta nagłówki i linkuje z nimi).
-LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
-if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
-    log "1/4 biblioteki FFmpeg $FFMPEG_VERSION (dynamiczne: libavformat, libavcodec, libavutil)"
-    libav_build "$FFMPEG_VERSION" "$WORK" "$WORK" "$LAVPREFIX" --libdir="$LAVPREFIX/lib" \
-        --extra-cflags="-march=$TARGET_CPU -O2" \
-        || fail "budowanie bibliotek FFmpeg (libav*) nie powiodło się"
-fi
-log "1/4 videopipeline + biblioteka core ($TARGET_CPU, informacje o plikach przez libavformat)"
-FFMPEG_DIR="$LAVPREFIX" LD_LIBRARY_PATH="$LAVPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-    VP_RUSTFLAGS_EXTRA="-C target-cpu=$TARGET_CPU" bash ./build.sh --features videopipeline/libav
-REL="${CARGO_TARGET_DIR:-target}/release"
-[[ -x "$REL/videopipeline" && -f "$REL/libvideopipeline_core.so" ]] \
-    || fail "build.sh nie wytworzył binarki/biblioteki"
-
 # --------------------------------------------------------------------------- 3. ffmpeg
-log "2/4 ffmpeg $FFMPEG_VERSION (statyczny, NVENC/NVDEC/CUDA-LLVM + Intel VAAPI/QSV jeśli dostępne, $TARGET_CPU)"
+log "1/4 biblioteki FFmpeg $FFMPEG_VERSION (dynamiczne: NVENC/NVDEC/CUDA-LLVM + Intel VAAPI/QSV jeśli dostępne, $TARGET_CPU)"
 # Intel (VAAPI + QSV przez oneVPL): libva, libdrm i libvpl są linkowane dynamicznie (Debian nie ma ich
 # wersji statycznych, a i tak muszą pasować do sterownika iHD i runtime'u oneVPL hosta — patrz AppRun).
 intel_available() {
@@ -128,7 +111,7 @@ fi
 
 # -tm: z mapowaniem tonów (zscale/libzimg + OpenCL), -pl: z libplacebo/Vulkan — stary cache bez nich
 # jest budowany od nowa.
-prefix_for() { echo "$CACHE/ffmpeg-$FFMPEG_VERSION-gpl-tm-pl$LIBPLACEBO_REF$([[ $1 = 1 ]] && echo -intel)"; }
+prefix_for() { echo "$CACHE/ffmpeg-$FFMPEG_VERSION-shared-gpl-tm-pl$LIBPLACEBO_REF$([[ $1 = 1 ]] && echo -intel)"; }
 
 build_ffmpeg() {   # $1 = 1|0 (Intel); prefiks = prefix_for $1
     local intel="$1" prefix; prefix="$(prefix_for "$1")"
@@ -146,12 +129,12 @@ build_ffmpeg() {   # $1 = 1|0 (Intel); prefiks = prefix_for $1
         cd "$src"
         export PKG_CONFIG_PATH="$NVH/lib/pkgconfig:$PLPREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
         if ! ./configure \
-            --prefix="$prefix" \
+            --prefix="$prefix" --libdir="$prefix/lib" \
             --pkg-config-flags=--static \
             --extra-cflags="-march=$TARGET_CPU -O2" \
             --enable-gpl \
             --disable-autodetect --disable-doc --disable-ffplay --disable-debug \
-            --disable-shared --enable-static \
+            --enable-shared --disable-static --disable-avdevice \
             --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-cuda --enable-cuda-llvm \
             --enable-libdav1d --enable-zlib "${extra[@]}" \
             --enable-libzimg --enable-opencl \
@@ -175,9 +158,12 @@ if [[ "$FORCE" = 1 || ! -x "$FFPREFIX/bin/ffmpeg" ]]; then
     build_ffmpeg "$USE_INTEL" || fail "budowanie ffmpeg nie powiodło się$([[ $USE_INTEL = 1 ]] && echo " (z Intelem: QSV/VAAPI; bez Intela: INTEL=0)")"
 fi
 
-FFMPEG="$FFPREFIX/bin/ffmpeg"
-[[ -x "$FFMPEG" ]] || fail "brak $FFMPEG"
-# Sprawdzamy, że ffmpeg ma wszystko, czego wymaga videopipeline (lista nie wymaga GPU).
+# Program ffmpeg z tego samego buildu służy tylko do kontroli poniżej — do paczki trafiają same biblioteki.
+[[ -x "$FFPREFIX/bin/ffmpeg" && -f "$FFPREFIX/lib/pkgconfig/libavfilter.pc" ]] || fail "brak bibliotek FFmpeg w $FFPREFIX"
+FFMPEG="$WORK/ffmpeg-check"
+printf '#!/bin/sh\nLD_LIBRARY_PATH="%s/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "%s/bin/ffmpeg" "$@"\n' "$FFPREFIX" "$FFPREFIX" > "$FFMPEG"
+chmod +x "$FFMPEG"
+# Sprawdzamy, że biblioteki mają wszystko, czego wymaga videopipeline (lista nie wymaga GPU).
 ENCODERS="$("$FFMPEG" -hide_banner -encoders 2>/dev/null)"
 FILTERS="$("$FFMPEG" -hide_banner -filters 2>/dev/null)"
 for e in hevc_nvenc av1_nvenc h264_nvenc eac3; do
@@ -203,6 +189,15 @@ else
 fi
 "$FFMPEG" -hide_banner -version | sed -n 1p
 
+# --------------------------------------------------------------------------- aplikacja
+# Program linkuje się z bibliotekami FFmpeg zbudowanymi wyżej (ffmpeg-sys-next: nagłówki i .so z FFMPEG_DIR).
+log "2/4 videopipeline + biblioteka core ($TARGET_CPU, na bibliotekach FFmpeg $FFMPEG_VERSION)"
+FFMPEG_DIR="$FFPREFIX" LD_LIBRARY_PATH="$FFPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    VP_RUSTFLAGS_EXTRA="-C target-cpu=$TARGET_CPU" bash ./build.sh
+REL="${CARGO_TARGET_DIR:-target}/release"
+[[ -x "$REL/videopipeline" && -f "$REL/libvideopipeline_core.so" ]] \
+    || fail "build.sh nie wytworzył binarki/biblioteki"
+
 # --------------------------------------------------------------------------- 3b. mpv
 # Budowany ze źródeł z bibliotekami Debiana (libass, libav*, Lua… z systemu kontenera) — linuxdeploy
 # dołączy je do paczki. libplacebo z Debiana bywa za stara dla nowego mpv, więc jest budowana razem
@@ -216,7 +211,7 @@ if [[ "$MPV_VERSION" = latest ]]; then
     fi
     [[ -n "$MPV_VERSION" ]] || fail "nie udało się ustalić wersji mpv — podaj MPV_VERSION=..."
 fi
-log "2b/4 mpv $MPV_VERSION (ze źródeł, $TARGET_CPU)"
+log "3a/4 mpv $MPV_VERSION (ze źródeł, $TARGET_CPU)"
 MPVPREFIX="$CACHE/mpv-$MPV_VERSION"
 if [[ "$FORCE" = 1 || ! -x "$MPVPREFIX/bin/mpv" ]]; then
     rm -rf "$WORK/mpv" "$MPVPREFIX"
@@ -257,7 +252,7 @@ if [[ "$ALACRITTY_VERSION" = latest ]]; then
     fi
     [[ -n "$ALACRITTY_VERSION" ]] || fail "nie udało się ustalić wersji Alacritty — podaj ALACRITTY_VERSION=..."
 fi
-log "2c/4 terminal: Alacritty $ALACRITTY_VERSION jako videopipeline-term (ze źródeł)"
+log "3b/4 terminal: Alacritty $ALACRITTY_VERSION jako videopipeline-term (ze źródeł)"
 ICON_TAG="$(sha256sum "$ROOT/icons/videopipeline-64.png" | cut -c1-8)"
 TERMDIR="$CACHE/alacritty-$ALACRITTY_VERSION-$ICON_TAG"
 if [[ "$FORCE" = 1 || ! -x "$TERMDIR/videopipeline-term" ]]; then
@@ -279,7 +274,7 @@ fi
 "$TERMDIR/videopipeline-term" --version
 
 # --------------------------------------------------------------------------- 4. AppDir
-log "3/4 składanie AppDir"
+log "3c/4 składanie AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/licenses/videopipeline"
@@ -292,11 +287,10 @@ STD_SO="$(find "$SYSROOT/lib" -name 'libstd-*.so' | head -n1)"
 [ -n "$STD_SO" ] || { echo "BŁĄD: brak libstd-*.so w $SYSROOT/lib"; exit 1; }
 echo "libstd: $STD_SO"
 cp "$STD_SO" "$APPDIR/usr/lib/"
-# libavformat/libavcodec/libavutil (z dowiązaniami .so.N, których szuka biblioteka core).
-cp -a "$LAVPREFIX"/lib/lib{avformat,avcodec,avutil}.so.* "$APPDIR/usr/lib/"
+# Biblioteki FFmpeg (z dowiązaniami .so.N, których szuka biblioteka core) — cały silnik programu.
+cp -a "$FFPREFIX"/lib/lib{avformat,avcodec,avutil,avfilter,swscale,swresample}.so.* "$APPDIR/usr/lib/"
 
 # ffprobe niepotrzebny — informacje o plikach program czyta przez libavformat.
-install -m755 "$FFPREFIX/bin/ffmpeg" "$APPDIR/usr/bin/"
 # libmediainfo nie jest w NEEDED (program ładuje ją sam) — kopia i jej zależności przez linuxdeploy --library.
 cp -L "$MEDIAINFO_SO" "$APPDIR/usr/lib/libmediainfo.so.0"
 install -m755 "$MPVPREFIX/bin/mpv" "$APPDIR/usr/bin/"
@@ -343,13 +337,12 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
     # Najpierw samo wdrożenie bibliotek (bez obrazu) — potem przenosimy część z nich do usr/lib/hostfirst.
     # libavformat/libavcodec/libavutil nie mają rpath — linuxdeploy szuka ich wzajemnych zależności
     # przez LD_LIBRARY_PATH (inaczej: „Could not find dependency: libavcodec.so.63”).
-    LD_LIBRARY_PATH="$APPDIR/usr/lib:$LAVPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    LD_LIBRARY_PATH="$APPDIR/usr/lib:$FFPREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     "$BIN/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/videopipeline" \
         --executable "$APPDIR/usr/bin/mpv" \
         --executable "$APPDIR/usr/bin/videopipeline-term" \
-        --executable "$APPDIR/usr/bin/ffmpeg" \
         --library "$APPDIR/usr/lib/libmediainfo.so.0" \
         --desktop-file "$APPDIR/usr/share/applications/videopipeline.desktop" \
         --icon-file "$ROOT/icons/videopipeline-256.png" --icon-filename videopipeline \

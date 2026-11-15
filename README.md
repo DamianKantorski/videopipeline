@@ -39,9 +39,9 @@ Wystarczy jedna karta. Gdy w komputerze są obie, domyślnie koduje NVIDIA, a In
 ## Instalacja
 
 Gotowe pliki są na stronie [Releases](https://github.com/8brzrs26ws-cloud/videopipeline/releases). Każdy wariant zawiera
-własne ffmpeg (NVENC i QSV; na Linuksie także VAAPI) i biblioteki FFmpeg (libavformat, libavcodec, libavutil — przez nie
-program czyta informacje o plikach, bez uruchamiania ffprobe) oraz bibliotekę MediaInfo; sterowniki GPU
-pochodzą z systemu.
+własne biblioteki FFmpeg (libavformat, libavcodec, libavfilter, libavutil, libswscale, libswresample — z NVENC i QSV,
+na Linuksie także VAAPI) oraz bibliotekę MediaInfo; sterowniki GPU pochodzą z systemu. Program nie uruchamia `ffmpeg`
+ani `ffprobe`: odczyt plików, dekodowanie, filtry, kodowanie i zapis kontenera wykonuje sam, wywołując te biblioteki.
 
 **AppImage** (dowolna dystrybucja spełniająca wymagania):
 
@@ -141,7 +141,7 @@ np. `HEVC NVENC → AV1 NVENC → AVC NVENC → HEVC QSV`; pod listą widać, co
 - NVIDIA: GPU, NVENC (koder), NVDEC (dekoder), VRAM — z `nvidia-smi`;
 - Intel: VIDEO (blok VDBox, który sprzętowo koduje i dekoduje — stąd jedna wartość), FILTRY (kadrowanie, odszumianie
   i konwersja formatu; sterownik wykonuje je na VEBox albo na jednostkach EU, więc pokazane jest większe z obciążeń)
-  i pamięć karty, liczone dla procesów ffmpeg, bez uprawnień administratora. Linux: `/proc/<pid>/fdinfo` (plus
+  i pamięć karty, liczone dla procesu programu, bez uprawnień administratora. Linux: `/proc/<pid>/fdinfo` (plus
   taktowanie karty), Windows: liczniki wydajności „GPU Engine”, te same co w Menedżerze zadań;
 - zawsze CPU i RAM.
 
@@ -163,7 +163,7 @@ Kod wyjścia: 0 — sukces, 1 — błędy, 130 — przerwano (Ctrl+C). `--tui` z
 
 ### Wybór karty
 
-Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecność w ffmpeg nic nie znaczy).
+Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecność kodera w bibliotece nic nie znaczy).
 
 - Tylko NVIDIA albo tylko Intel — używana jest ta karta, bez żadnych flag.
 - Obie karty — domyślnie NVIDIA; Intel: `--intel` (QSV, a na Linuksie, gdy QSV nie działa — VAAPI) albo
@@ -188,7 +188,7 @@ Przy starcie program wykrywa enkodery krótkim kodowaniem testowym (sama obecno�
 | `--1080p` | zmniejszenie obrazu do 1920×1080 z zachowaniem proporcji (po kadrowaniu, np. 3840×1600 → 1920×800); mniejsze źródła bez zmian. NVIDIA: na CPU (Lanczos) przed NVENC, Intel: `vpp_qsv` / `scale_vaapi` na karcie. Obszar aktywny Dolby Vision (L5) jest przeliczany. Nazwa wyniku dostaje `_1080p` |
 | `--audio auto\|copy\|aac\|alac\|flac\|ac3` | kodek ścieżek audio (także w F7, zaraz pod kodekiem wideo). `auto` (domyślnie, „jak źródło”): kopia; PCM → FLAC w MKV / AAC w MP4; nagrania z iPhone'a / iPada → AAC; do MP4 kodeki spoza MP4 (DTS, TrueHD) → E-AC-3 640k. `aac`: wbudowany koder ffmpeg, CBR 160 kb/s na kanał (stereo 320k, 5.1 960k). `alac` / `flac`: bezstratnie, 16 albo 24 bity jak źródło. `ac3`: Dolby Digital 640k (stereo 448k) — np. PS4 z AVC. Ścieżka już w wybranym kodeku jest kopiowana |
 | `--strip-meta` | bez lokalizacji (GPS) i danych urządzenia (marka, model, wersja oprogramowania, znaczniki aplikacji) w pliku wynikowym; zostaje tytuł i data nagrania. Także w F7 |
-| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, każde wywołanie narzędzia (ffmpeg; także odczyty przez biblioteki FFmpeg i MediaInfo) z pełnym wiersza polecenia, wyjściem i kodem zakończenia, a także cały log kodera. Także w F7 |
+| `--log-file` | pełny log przebiegu do pliku `videopipeline_<data>.log` w katalogu wyjściowym: wszystkie komunikaty z czasem, opis każdego zadania kodowania i testu (opcje w składni FFmpeg), komunikaty bibliotek FFmpeg (w tym kodera), odczyty plików i raporty MediaInfo. Także w F7 |
 | `-pdv`, `-ph` | bez Dolby Vision / bez HDR10+ |
 | `-c` | kopia wyniku do `<katalog źródła>/encoded` z weryfikacją SHA-512 |
 | `-s` | wyłącz komputer po zakończeniu |
@@ -225,13 +225,19 @@ FFmpeg), z których RPU Dolby Vision i metadane HDR10+ trafiają do plików w ty
 extract-rpu` / `hdr10plus_tool extract` (wynik identyczny, bajt w bajt). Okno analizy pokazuje postęp odczytu: procent,
 pozycję w filmie, prędkość i szacowany czas do końca.
 
-**Bez plików tymczasowych.** ffmpeg koduje wideo i od razu zapisuje plik wynikowy razem z audio (kopia, a E-AC-3
-z `-pleac3` / `-da` w locie) i napisami — bez pośrednich plików `.hevc`/`.eac3` i bez osobnego muksowania. Do czasu
-ukończenia plik ma końcówkę `.part`.
+**Silnik na bibliotekach FFmpeg.** Każdy plik koduje jeden wątek programu: libavformat czyta kontener, libavcodec
+dekoduje (sprzętowo: NVDEC/CUDA, QSV, VAAPI), libavfilter wykonuje filtry (kadrowanie, skalowanie, odszumianie,
+mapowanie tonów), koder karty koduje, a libavformat zapisuje plik wynikowy razem z audio (kopia albo przekodowanie),
+napisami, rozdziałami i metadanymi. Zadanie jest opisane tymi samymi nazwami opcji, filtrów i koderów co w FFmpeg,
+więc ustawienia trafiają do bibliotek bez tłumaczenia, a wynik jest taki sam jak z `ffmpeg` uruchomionego z tymi
+samymi opcjami.
 
-**Dolby Vision i HDR10+ w locie.** Przy źródłach z DV / HDR10+ (HEVC) koder wysyła surowy strumień HEVC do programu,
-który dokleja do każdej klatki jej RPU Dolby Vision i SEI HDR10+ (biblioteki dolby_vision i hdr10plus), a drugi
-ffmpeg od razu składa z tego plik wynikowy z audio i napisami. Metadane trafiają do klatek według kolejności wyświetlania,
+**Bez plików tymczasowych.** Wideo, audio i napisy trafiają od razu do pliku wynikowego — bez pośrednich plików
+i bez osobnego muksowania. Do czasu ukończenia plik ma końcówkę `.part`.
+
+**Dolby Vision i HDR10+ w locie.** Przy źródłach z DV / HDR10+ (HEVC) program dokleja do każdego pakietu kodera RPU
+Dolby Vision i SEI HDR10+ jego klatki (biblioteki dolby_vision i hdr10plus), zanim pakiet trafi do kontenera — bez
+potoków i drugiego procesu. Metadane trafiają do klatek według kolejności wyświetlania,
 tak samo jak w `dovi_tool inject-rpu` / `hdr10plus_tool inject` (wynik sprawdzony z tymi narzędziami), a plik
 ma rekord konfiguracji DV (dvcC/dvvC) w MKV i w MP4. RPU profilu 7 (dwie warstwy) są przerabiane na 8.1, bo kodowana
 jest tylko warstwa bazowa. Program nie potrzebuje do tego dovi_tool, hdr10plus_tool ani mkvmerge.
@@ -278,19 +284,18 @@ Kliknij miniaturę, żeby zobaczyć pełny rozmiar.
 
 ### Wersja deweloperska
 
-Potrzebne: Rust (stable), w `PATH` ffmpeg i ffprobe z obsługą wybranej karty (NVENC/CUDA albo QSV/VAAPI) i mpv
-(opcjonalnie, dla F3) oraz biblioteka libmediainfo (okienko F2; pakiet `libmediainfo0v5` / `libmediainfo`).
+Potrzebne: Rust (stable), libclang oraz biblioteki FFmpeg z nagłówkami (libavformat, libavcodec, libavfilter, libavutil,
+libswscale, libswresample) zbudowane z obsługą wybranej karty (NVENC/CUDA albo QSV/VAAPI); do tego biblioteka
+libmediainfo (okienko F2) i mpv (opcjonalnie, dla F3). Programy `ffmpeg` i `ffprobe` nie są potrzebne.
 
-    ./install-build-deps.sh --dev   # raz: Rust (rustup), ffmpeg, libmediainfo, mpv (Arch, Debian)
+    ./install-build-deps.sh --dev   # raz: Rust (rustup), biblioteki FFmpeg, libclang, libmediainfo, mpv (Arch, Debian)
     ./build.sh       # target/release/videopipeline + libvideopipeline_core.so
-    FFMPEG_DIR=/ścieżka/do/ffmpeg ./build.sh --features videopipeline/libav   # opcjonalnie, jak w paczkach
+    FFMPEG_DIR=/ścieżka/do/ffmpeg ./build.sh   # inne biblioteki FFmpeg niż systemowe (prefiks z include/ i lib/)
     ./install.sh     # opcjonalnie: ~/.local/bin (z biblioteką libstd Rusta), ikona i wpis w menu
     ./uninstall.sh   # usuwa to, co zainstalował install.sh
 
-Bez funkcji `libav` informacje o plikach (strumienie, kolory, długość, znaczniki) czyta ffprobe z `PATH`. Z nią —
-biblioteki dynamiczne FFmpeg (sprawdzone z 9.x; libavformat, libavcodec, libavutil z nagłówkami; `FFMPEG_DIR` albo
-pkg-config; do kompilacji potrzebny libclang), a ffprobe nie jest potrzebny. Paczki są budowane z `libav`: biblioteki
-zawierają tylko demuxery, parsery i dekodery, kodowanie nadal robi dołączony statyczny ffmpeg.
+Biblioteki FFmpeg są znajdowane przez pkg-config albo `FFMPEG_DIR`; paczki są budowane z FFmpeg 9.0 i z tą wersją
+program był sprawdzany.
 
 Program to biblioteka z całą logiką (`core/`) i binarka z interfejsem (`app/`). Oba pliki muszą pochodzić z jednego builda
 i leżeć w tym samym katalogu (albo binarka w `bin/`, biblioteka w `../lib/`).
@@ -298,8 +303,8 @@ i leżeć w tym samym katalogu (albo binarka w `bin/`, biblioteka w `../lib/`).
 ### Wydania: AppImage, deb i Windows (Docker)
 
 Wydania buduje się w kontenerze Debian 13, więc wynik nie zależy od systemu, na którym budujesz. Wersja dla Windows
-powstaje tam przez kroskompilację (MinGW-w64, cel Rusta `x86_64-pc-windows-gnu`): aplikacja, dav1d, libvpl, ffmpeg
-i biblioteki FFmpeg są kompilowane ze źródeł, a MediaInfo.dll pochodzi z oficjalnej paczki MediaArea.
+powstaje tam przez kroskompilację (MinGW-w64, cel Rusta `x86_64-pc-windows-gnu`): aplikacja, dav1d, libvpl
+i biblioteki FFmpeg (DLL) są kompilowane ze źródeł, a MediaInfo.dll pochodzi z oficjalnej paczki MediaArea.
 Odtwarzacz mpv (F3) dla Linuksa jest kompilowany ze źródeł; dla Windows dołączany jest gotowy build
 [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) (x86-64-v3), bo kroskompilacja mpv
 z całym drzewem zależności byłaby bardzo długa.
@@ -314,7 +319,7 @@ Zmienne dla `build-local.sh`:
 
 | Zmienna | Znaczenie |
 |---|---|
-| `FFMPEG_VERSION` | wersja ffmpeg, domyślnie `latest` (najnowsze wydanie) |
+| `FFMPEG_VERSION` | wersja FFmpeg (biblioteki), domyślnie `latest` (najnowsze wydanie) |
 | `INTEL` | Linux: `auto` (domyślnie), `1` — wymagaj QSV/VAAPI, `0` — bez Intela |
 | `DAV1D_REF`, `LIBVPL_REF`, `MEDIAINFO_VERSION` | Windows: wersje bibliotek i MediaInfo.dll, domyślnie `latest` |
 | `MPV_VERSION` | Linux: wersja mpv budowanego ze źródeł (np. `0.41.0`), domyślnie `latest` |
@@ -322,7 +327,7 @@ Zmienne dla `build-local.sh`:
 | `ALACRITTY_VERSION` | wersja Alacritty (terminal `videopipeline-term`), domyślnie `latest` |
 | `MPV_WIN_TAG` | Windows: tag wydania shinchiro (data, np. `20261108`), domyślnie `latest` |
 | `TARGET_CPU` | domyślnie `x86-64-v3` |
-| `FORCE=1` | przebuduj ffmpeg i narzędzia mimo cache |
+| `FORCE=1` | przebuduj biblioteki FFmpeg i narzędzia mimo cache |
 | `DOCKER=podman` | Podman zamiast Dockera |
 
 ### Budowanie na Windows (WSL)

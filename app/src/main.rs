@@ -129,7 +129,7 @@ fn main() {
 fn prepend_bundled_tools_to_path() {
     let Ok(exe) = std::env::current_exe() else { return };
     let Some(dir) = exe.parent() else { return };
-    if !platform::has_exe(dir, "ffmpeg") {
+    if !platform::has_exe(dir, "mpv") {
         return;
     }
     let mut paths = vec![dir.to_path_buf()];
@@ -249,16 +249,15 @@ fn real_main() -> Result<i32> {
     }
 
     if cli.detect {
-        // Diagnostyka: wersja ffmpeg, każdy test z poleceniem i błędem ffmpeg.
-        match hw::ffmpeg_version() {
-            Some(v) => println!("{v}"),
-            None => println!("ffmpeg: nie znaleziono albo nie uruchamia się"),
+        // Diagnostyka: wersje bibliotek FFmpeg, każdy test z opisem zadania i komunikatami bibliotek.
+        if let Some(v) = hw::ffmpeg_version() {
+            println!("{v}");
         }
         let (hw, reports, qsv_tries) = hw::detect_report();
         for (dev, ok, cmd, err) in &qsv_tries {
             println!("\n[{}] urządzenie QSV: {dev}", if *ok { "OK  " } else { "BRAK" });
             if !ok {
-                println!("  polecenie: {cmd}");
+                println!("  zadanie: {cmd}");
                 for l in err.lines().filter(|l| !l.trim().is_empty()).take(8) {
                     println!("  {l}");
                 }
@@ -269,7 +268,7 @@ fn real_main() -> Result<i32> {
             println!("\n[{mark}] {} {}", r.codec.label(), r.engine.label());
             if !r.ok {
                 if !r.command.is_empty() {
-                    println!("  polecenie: {}", r.command);
+                    println!("  zadanie: {}", r.command);
                 }
                 for l in r.error.lines().filter(|l| !l.trim().is_empty()).take(8) {
                     println!("  {l}");

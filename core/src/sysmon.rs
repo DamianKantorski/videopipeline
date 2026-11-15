@@ -149,7 +149,7 @@ impl Monitor {
         let mut s = SysStats::default();
         s.gpu = self.gpu.lock().ok().and_then(|g| g.clone());
         if let Some(i) = self.intel.as_mut() {
-            let pids: Vec<u32> = crate::proc::PIDS.lock().map(|g| g.clone()).unwrap_or_default();
+            let pids = crate::proc::monitored_pids();
             s.intel = Some(i.sample(&pids));
         }
 

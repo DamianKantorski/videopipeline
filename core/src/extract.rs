@@ -209,22 +209,7 @@ pub fn save(c: &Collected, rpu_out: Option<&Path>, hdr10plus_out: Option<&Path>)
 /// Odczyt całego pliku bez okna postępu (narzędzia, testy): RPU i HDR10+ w kolejności wyświetlania.
 pub fn from_file(input: &Path) -> Result<Collected> {
     let mut ex = Extractor::new(true, true);
-    #[cfg(feature = "libav")]
     crate::libav::hevc_nals(input, |n| ex.nal(n), |_| true)?;
-    #[cfg(not(feature = "libav"))]
-    {
-        let mut ff = crate::proc::command("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-i"])
-            .arg(input)
-            .args(["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .context("nie można uruchomić ffmpeg")?;
-        let mut out = ff.stdout.take().context("brak stdout ffmpeg")?;
-        inject::split_annexb(&mut out, |n| ex.nal(&n))?;
-        let _ = ff.wait();
-    }
     Ok(ex.finish())
 }
 

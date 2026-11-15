@@ -5,7 +5,8 @@ Uruchamianie
   Rozpakuj cały folder w dowolnym miejscu i uruchom videopipeline.exe
   (dwuklik otwiera okno konsoli). Najlepiej wygląda w Windows Terminal.
   Wszystkie pliki muszą zostać w jednym folderze: program używa dołączonych
-  ffmpeg.exe, avformat/avcodec/avutil-*.dll, MediaInfo.dll (okienko F2),
+  bibliotek FFmpeg (avformat-*.dll, avcodec-*.dll, avfilter-*.dll, avutil-*.dll, swscale-*.dll,
+  swresample-*.dll), MediaInfo.dll (okienko F2),
   mpv.exe (odtwarzanie pod F3) i videopipeline-term.exe (okno programu).
 
   Tryb skryptowy (PowerShell / cmd):

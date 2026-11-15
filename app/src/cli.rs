@@ -69,7 +69,7 @@ pub fn run(opts: Opts, paths: Vec<PathBuf>) -> Result<i32> {
     );
 
     ctrlc::set_handler(|| {
-        eprintln!("\nPrzerwanie — zatrzymuję aktywne procesy ffmpeg...");
+        eprintln!("\nPrzerwanie — zatrzymuję kodowanie...");
         proc::set_cancel(true);
         proc::kill_all();
     })?;

@@ -9,16 +9,10 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     path::Path,
-    sync::OnceLock,
 };
 
 fn init() {
-    static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(|| {
-        let _ = ff::init();
-        // Komunikaty bibliotek szłyby na stderr i psuły ekran TUI — błędy wracają jako Result.
-        ff::util::log::set_level(ff::util::log::Level::Quiet);
-    });
+    crate::av::init();
 }
 
 fn cstr(p: *const std::os::raw::c_char) -> String {
@@ -31,12 +25,6 @@ fn cstr(p: *const std::os::raw::c_char) -> String {
 
 fn dict(d: ff::DictionaryRef) -> HashMap<String, String> {
     d.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-}
-
-/// Wersje bibliotek (do logu): „libavformat 63.1.102 · libavcodec 63.1.102”.
-pub fn versions() -> String {
-    let v = |x: u32| format!("{}.{}.{}", x >> 16, (x >> 8) & 0xff, x & 0xff);
-    unsafe { format!("libavformat {} · libavcodec {}", v(ffi::avformat_version()), v(ffi::avcodec_version())) }
 }
 
 /// Strumienie, długość i znaczniki pliku (jak `ffprobe -show_streams -show_format`).

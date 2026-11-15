@@ -100,8 +100,7 @@ impl ReadProgress<'_> {
     }
 }
 
-/// Odczyt HEVC przez biblioteki FFmpeg: pakiety prosto z kontenera, bez osobnego procesu.
-#[cfg(feature = "libav")]
+/// Odczyt HEVC przez biblioteki FFmpeg: pakiety prosto z kontenera.
 fn read_hevc(input: &Path, ex: &mut Extractor, prog: &mut ReadProgress) -> Result<()> {
     crate::log::file_line(&format!("[libav] odczyt HEVC do analizy DV/HDR10+: {}", input.display()));
     crate::libav::hevc_nals(
@@ -112,61 +111,6 @@ fn read_hevc(input: &Path, ex: &mut Extractor, prog: &mut ReadProgress) -> Resul
             !proc::cancelled()
         },
     )
-}
-
-/// Odczyt HEVC przez ffmpeg (kopia → Annex B na stdout) — gdy program zbudowano bez bibliotek FFmpeg.
-#[cfg(not(feature = "libav"))]
-fn read_hevc(input: &Path, ex: &mut Extractor, prog: &mut ReadProgress) -> Result<()> {
-    use crate::model::read_progress;
-    use anyhow::Context;
-    use std::process::Stdio;
-    let pf = std::env::temp_dir().join(format!(
-        "videopipeline-{}-{}.ffprogress",
-        std::process::id(),
-        prog.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>()
-    ));
-    let _ = fs::remove_file(&pf);
-    let full = crate::log::full();
-    let cap = crate::log::Capture::new(&format!("ffmpeg (odczyt HEVC do analizy) — {}", prog.name));
-    let mut cmd = crate::proc::command("ffmpeg");
-    cmd.args(["-hide_banner", "-loglevel", if full { "info" } else { "quiet" }, "-nostats", "-progress"])
-        .arg(&pf)
-        .arg("-i")
-        .arg(input)
-        .args(["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(crate::log::stdio(&cap));
-    if full {
-        crate::log::file_line(&format!("$ {}", crate::log::cmdline(&cmd)));
-    }
-    let mut ff = cmd.spawn().context("nie można uruchomić ffmpeg")?;
-    proc::register(ff.id());
-    let mut out = ff.stdout.take().context("brak stdout ffmpeg")?;
-    let mut own = std::mem::replace(ex, Extractor::new(false, false));
-    let reader = std::thread::spawn(move || {
-        let r = crate::inject::split_annexb(&mut out, |n| own.nal(&n));
-        (own, r)
-    });
-    while !reader.is_finished() {
-        if proc::cancelled() {
-            let _ = ff.kill();
-        }
-        let pr = read_progress(&pf);
-        let speed = pr.speed.as_deref().and_then(|v| v.trim_end_matches('x').trim().parse::<f64>().ok());
-        prog.show(pr.out_us.map(|u| u / 1e6).unwrap_or(0.0), speed, false);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let (own, r) = reader.join().map_err(|_| anyhow::anyhow!("wątek odczytu HEVC przerwany"))?;
-    *ex = own;
-    let _ = ff.kill();
-    let _ = ff.wait();
-    proc::unregister(ff.id());
-    if let Some(c) = cap {
-        c.finish();
-    }
-    let _ = fs::remove_file(&pf);
-    r
 }
 
 /// Dolby Vision RPU i HDR10+ z jednego odczytu strumienia HEVC źródła — do plików `rpu_out`
@@ -210,19 +154,6 @@ fn extract_hdr(
     }
 }
 
-fn last_crop(stderr: &str) -> Option<String> {
-    stderr
-        .lines()
-        .filter_map(|l| {
-            let s = &l[l.rfind("crop=")? + 5..];
-            let tok = s.split_whitespace().next()?;
-            let nums: Vec<&str> = tok.split(':').collect();
-            (nums.len() == 4 && nums.iter().all(|n| n.parse::<u32>().is_ok()))
-                .then(|| tok.to_string())
-        })
-        .last()
-}
-
 fn detect_crop(
     input: &Path,
     duration: Option<f64>,
@@ -242,23 +173,27 @@ fn detect_crop(
             name,
             pct,
             "CROPDETECT",
-            &format!("Próbka {}/{} — ffmpeg -ss {ts}", i + 1, points.len()),
+            &format!("Próbka {}/{} — od {ts} s", i + 1, points.len()),
         );
         if proc::cancelled() {
             break;
         }
-        let Some(out) = proc::output(
-            crate::proc::command("ffmpeg")
-                .args(["-hide_banner", "-ss", ts.as_str(), "-i"])
-                .arg(input)
-                .args(["-an", "-sn", "-dn", "-vframes", "15", "-vf"])
-                .arg("format=yuv420p,gblur=sigma=2,cropdetect=limit=24:round=16:reset=0")
-                .args(["-f", "null", "-"]),
-        ) else {
+        // Kilkanaście klatek od próbki przez filtr cropdetect; wynik w metadanych ostatniej klatki.
+        let args: Vec<String> = [
+            "-ss", ts.as_str(), "-i", &input.to_string_lossy(), "-an", "-sn", "-frames:v", "15", "-vf",
+            "format=yuv420p,gblur=sigma=2,cropdetect=limit=24:round=16:reset=0", "-f", "null", "-",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let Ok(rep) = crate::av::Job::parse(&args).and_then(|j| crate::av::run(&j, Default::default())) else {
             continue;
         };
-        if let Some(c) = last_crop(&String::from_utf8_lossy(&out.stderr)) {
-            found.push(c);
+        let get = |k: &str| rep.frame_meta.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        if let (Some(w), Some(h), Some(x), Some(y)) =
+            (get("lavfi.cropdetect.w"), get("lavfi.cropdetect.h"), get("lavfi.cropdetect.x"), get("lavfi.cropdetect.y"))
+        {
+            found.push(format!("{w}:{h}:{x}:{y}"));
         }
     }
     if found.is_empty() {

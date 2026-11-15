@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Instaluje to, czego potrzebuje ./build-local.sh i ./release.sh na hoście: Docker (z buildx), git, GitHub CLI.
 # Cała reszta (Rust, ffmpeg, clang, nasm...) jest w obrazie Dockera, więc na hoście nie jest potrzebna.
-#   --dev   dodatkowo wersja deweloperska (./build.sh): Rust (rustup) oraz ffmpeg, libmediainfo, mpv
+#   --dev   dodatkowo wersja deweloperska (./build.sh): Rust (rustup), biblioteki FFmpeg z nagłówkami, libclang,
+#           libmediainfo, mpv
 # Obsługa: Arch/CachyOS/Manjaro (pacman) oraz Debian/Ubuntu (apt), także w WSL.
 set -euo pipefail
 DEV=0
@@ -22,7 +23,7 @@ SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
 case "$ID_ALL" in
     *" arch "*)
         $SUDO pacman -S --needed --noconfirm docker docker-buildx git github-cli
-        [[ $DEV = 1 ]] && $SUDO pacman -S --needed --noconfirm rustup base-devel ffmpeg libmediainfo mpv
+        [[ $DEV = 1 ]] && $SUDO pacman -S --needed --noconfirm rustup base-devel clang ffmpeg libmediainfo mpv
         ;;
     *" debian "*|*" ubuntu "*)
         $SUDO apt-get update
@@ -31,7 +32,8 @@ case "$ID_ALL" in
         CLI=""; apt-cache show docker-cli >/dev/null 2>&1 && CLI="docker-cli"
         $SUDO apt-get install -y --no-install-recommends docker.io $CLI docker-buildx git gh ca-certificates
         [[ $DEV = 1 ]] && $SUDO apt-get install -y --no-install-recommends build-essential curl pkg-config \
-            ffmpeg libmediainfo0v5 mpv
+            clang libclang-dev libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev \
+            libswresample-dev libmediainfo0v5 mpv
         ;;
     *)
         echo "Nieobsługiwana dystrybucja ($PRETTY_NAME). Zainstaluj ręcznie: docker (+buildx), git, gh." >&2

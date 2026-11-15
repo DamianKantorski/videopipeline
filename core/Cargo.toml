@@ -1,6 +1,6 @@
 [package]
 name = "videopipeline-core"
-version = "0.20.0"
+version = "1.0.0"
 edition = "2021"
 description = "VideoPipeline — pełna logika kodowania (biblioteka dynamiczna)"
 
@@ -21,8 +21,4 @@ dolby_vision = "3.4"
 hdr10plus = { version = "2.1", features = ["hevc", "json"] }
 # Odczyt plików przez libavformat / libavcodec (biblioteki dynamiczne FFmpeg) zamiast ffprobe.
 libloading = "0.8"
-ffmpeg-next = { version = "9.1", default-features = false, features = ["format", "codec"], optional = true }
-
-[features]
-# Paczki budują z „libav”; bez niej (np. szybki build deweloperski bez nagłówków FFmpeg) — ffprobe.
-libav = ["dep:ffmpeg-next"]
+ffmpeg-next = { version = "9.1", default-features = false, features = ["format", "codec", "filter"] }

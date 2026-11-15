@@ -1342,7 +1342,7 @@ fn intel_lines(s: &SysStats, i: &IntelStats, cw: usize) -> Vec<Line<'static>> {
         _ => (None, String::new()),
     };
     let mem = match i.mem_bytes {
-        Some(b) => format!("pamięć GPU (ffmpeg): {:.2}G", gib(b)),
+        Some(b) => format!("pamięć GPU (kodowanie): {:.2}G", gib(b)),
         None => "pamięć GPU: brak danych".into(),
     };
     let header = format!("─ obciążenie · {}{freq}", i.name);

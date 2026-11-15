@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Kroskompilacja wersji Windows x64 (x86_64-pc-windows-gnu, MinGW-w64) w kontenerze Debian 13:
 #   dist/VideoPipeline-<wersja>-windows-x86_64_v3.zip (+ .sha256)
-# Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, avformat/avcodec/avutil-*.dll (odczyt
-# informacji o plikach), ffmpeg.exe
-# (statyczne: NVENC/NVDEC/CUDA-LLVM, Intel QSV przez oneVPL + D3D11, dav1d, zlib), MediaInfo.dll
-# (oficjalna biblioteka MediaArea, okienko F2), mpv.exe i videopipeline-term.exe.
+# Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, biblioteki FFmpeg jako DLL
+# (avformat, avcodec, avfilter, avutil, swscale, swresample — NVENC/NVDEC/CUDA-LLVM, Intel QSV przez
+# oneVPL + D3D11, dav1d, zimg, libplacebo wkompilowane statycznie), MediaInfo.dll (oficjalna biblioteka
+# MediaArea, okienko F2), mpv.exe i videopipeline-term.exe. Bez ffmpeg.exe — program sam wywołuje biblioteki.
 # Sterowniki GPU (NVIDIA, Intel) pochodzą z systemu Windows.
 #
-# Zmienne: VERSION, FFMPEG_VERSION (latest = najnowsze wydanie), DOVI_TOOL_REF, HDR10PLUS_TOOL_REF,
+# Zmienne: VERSION, FFMPEG_VERSION (latest = najnowsze wydanie),
 # DAV1D_REF, LIBVPL_REF, MEDIAINFO_VERSION (latest = najnowsze), NVCODEC_HEADERS_REF, TARGET_CPU, JOBS, FORCE=1.
 # Uruchamiane przez ./build-local.sh (TARGETS zawiera "windows").
 set -euo pipefail
@@ -124,36 +124,10 @@ echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, Medi
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 
-# ------------------------------------------------------------------ 1. aplikacja
-# Biblioteki dynamiczne FFmpeg (avformat-*.dll, avcodec-*.dll, avutil-*.dll) do odczytu informacji
-# o plikach zamiast ffprobe.exe — przed kompilacją programu (funkcja `libav`).
-LAVPREFIX="$CACHE/libav-$FFMPEG_VERSION"
-if [[ "$FORCE" = 1 || ! -f "$LAVPREFIX/lib/pkgconfig/libavformat.pc" ]]; then
-    log "1/5 biblioteki FFmpeg $FFMPEG_VERSION (DLL: avformat, avcodec, avutil)"
-    # -static: libgcc, winpthread i zlib wkompilowane — DLL zależą tylko od systemu i od siebie.
-    libav_build "$FFMPEG_VERSION" "$WORK" "$BUILD/work" "$LAVPREFIX" \
-        --target-os=mingw32 --arch=x86_64 --cross-prefix="$TRIPLE-" --cc="$CC_W" --cxx="$CXX_W" \
-        --pkg-config=pkg-config --extra-cflags="-march=$TARGET_CPU -O2" --extra-ldflags="-static" \
-        || fail "budowanie bibliotek FFmpeg (DLL) nie powiodło się"
-fi
-log "1/5 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU, informacje o plikach przez libavformat)"
-# RUSTFLAGS zastępuje .cargo/config.toml — prefer-dynamic podajemy jawnie (biblioteka core jako DLL).
-# app/build.rs wkompilowuje ikonę i informacje o wersji przez windres.
-# ffmpeg-sys-next: nagłówki i biblioteki importu z FFMPEG_DIR; bindgen (clang) z nagłówkami MinGW.
-# Nagłówki MinGW wciągają wszystkie intrinsics clanga, a typów AMX (__tile1024i, align 64 w strukturze
-# packed) bindgen nie umie przełożyć na Rusta — pomijamy te nagłówki przez ich strażniki #define.
-AMX_SKIP="$(for h in "$(clang -print-resource-dir)"/include/amx*.h; do
-    sed -nE 's/^#define (__AMX[A-Z0-9_]*_H)\b.*/-D\1/p' "$h" | head -n1; done | tr '\n' ' ')"
-FFMPEG_DIR="$LAVPREFIX" BINDGEN_EXTRA_CLANG_ARGS="--target=$RTARGET --sysroot=/usr/$TRIPLE $AMX_SKIP" \
-    WINDRES="$TRIPLE-windres" RUSTFLAGS="-C prefer-dynamic -C target-cpu=$TARGET_CPU" \
-    cargo build --release --target "$RTARGET" --features videopipeline/libav
-OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
-[[ -f "$OUT/videopipeline.exe" && -f "$OUT/videopipeline_core.dll" ]] || fail "brak videopipeline.exe / videopipeline_core.dll"
-STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
 [[ -n "$STD_DLL" ]] || fail "brak std-*.dll celu $RTARGET"
 
 # ------------------------------------------------------------------ 3. biblioteki statyczne
-log "2/5 dav1d $DAV1D_REF, libvpl $LIBVPL_REF, nv-codec-headers (statycznie, MinGW)"
+log "1/5 dav1d $DAV1D_REF, libvpl $LIBVPL_REF, nv-codec-headers (statycznie, MinGW)"
 CROSSFILE="$WORK/meson-cross.txt"
 cat > "$CROSSFILE" <<EOF
 [binaries]
@@ -297,10 +271,10 @@ if [[ "$FORCE" = 1 || "$(cat "$DEPS/.stamp" 2>/dev/null)" != "$DEPSTAMP" ]]; the
 fi
 
 # ------------------------------------------------------------------ 4. ffmpeg
-log "3/5 ffmpeg $FFMPEG_VERSION (statyczny .exe: NVENC/NVDEC/CUDA-LLVM, QSV + D3D11, dav1d, $TARGET_CPU)"
-FFPREFIX="$CACHE/ffmpeg-$FFMPEG_VERSION"
+log "2/5 biblioteki FFmpeg $FFMPEG_VERSION (DLL: NVENC/NVDEC/CUDA-LLVM, QSV + D3D11, dav1d, $TARGET_CPU)"
+FFPREFIX="$CACHE/ffmpeg-shared-$FFMPEG_VERSION"
 FFSTAMP="$DEPSTAMP cpu=$TARGET_CPU"
-if [[ "$FORCE" = 1 || ! -f "$FFPREFIX/bin/ffmpeg.exe" || "$(cat "$FFPREFIX/.stamp" 2>/dev/null)" != "$FFSTAMP" ]]; then
+if [[ "$FORCE" = 1 || ! -f "$FFPREFIX/lib/pkgconfig/libavfilter.pc" || "$(cat "$FFPREFIX/.stamp" 2>/dev/null)" != "$FFSTAMP" ]]; then
     SRC="$WORK/ffmpeg-$FFMPEG_VERSION"
     # Archiwum źródeł wspólne z buildem Linux (build/work).
     ffmpeg_unpack "$FFMPEG_VERSION" "$WORK" "$BUILD/work" \
@@ -317,10 +291,10 @@ if [[ "$FORCE" = 1 || ! -f "$FFPREFIX/bin/ffmpeg.exe" || "$(cat "$FFPREFIX/.stam
             --cc="$CC_W" --cxx="$CXX_W" \
             --pkg-config=pkg-config --pkg-config-flags=--static \
             --extra-cflags="-march=$TARGET_CPU -O2 -I$DEPS/include" \
-            --extra-ldflags="-static -L$DEPS/lib" \
+            --extra-ldflags="-static -static-libgcc -static-libstdc++ -L$DEPS/lib" \
             --enable-gpl \
-            --disable-autodetect --disable-doc --disable-ffplay --disable-debug \
-            --disable-shared --enable-static \
+            --disable-autodetect --disable-doc --disable-programs --disable-debug \
+            --enable-shared --disable-static --disable-avdevice \
             --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-cuda --enable-cuda-llvm \
             --enable-d3d11va --enable-dxva2 --enable-libvpl \
             --enable-libdav1d --enable-zlib --enable-libzimg "$@"
@@ -332,14 +306,14 @@ if [[ "$FORCE" = 1 || ! -f "$FFPREFIX/bin/ffmpeg.exe" || "$(cat "$FFPREFIX/.stam
         if ffconfigure "${gpu_tm[@]}"; then
             :
         elif [[ -f "$DEPS/.opencl" ]] && ffconfigure --enable-opencl; then
-            echo "UWAGA: ffmpeg.exe bez libplacebo — mapowanie tonów OpenCL" >&2
+            echo "UWAGA: biblioteki FFmpeg bez libplacebo — mapowanie tonów OpenCL" >&2
         else
-            echo "UWAGA: ffmpeg.exe bez OpenCL i libplacebo — mapowanie tonów HDR → SDR na CPU" >&2
+            echo "UWAGA: biblioteki FFmpeg bez OpenCL i libplacebo — mapowanie tonów HDR → SDR na CPU" >&2
             ffconfigure
         fi
         make -j"$JOBS"
         make install
-        # ffmpeg.exe nie uruchomi się w kontenerze — sprawdzamy, co trafiło do konfiguracji.
+        # Bibliotek dla Windows nie da się uruchomić w kontenerze — sprawdzamy, co trafiło do konfiguracji.
         # Od FFmpeg 5.1 lista komponentów (CONFIG_*_ENCODER itd.) jest w config_components.h.
         cp config.h "$FFPREFIX/config.h"
         [[ -f config_components.h ]] && cp config_components.h "$FFPREFIX/config_components.h"
@@ -359,13 +333,29 @@ for c in HEVC_NVENC_ENCODER AV1_NVENC_ENCODER HEVC_QSV_ENCODER AV1_QSV_ENCODER E
          ZSCALE_FILTER TONEMAP_FILTER; do
     grep -q "^#define CONFIG_$c 1" <<<"$FFCONF" || fail "ffmpeg (Windows) bez $c"
 done
-echo "ffmpeg.exe: NVENC, QSV, CUDA i filtry obecne"
+echo "biblioteki FFmpeg: NVENC, QSV, CUDA i filtry obecne"
 grep -q "^#define CONFIG_LIBPLACEBO_FILTER 1" <<<"$FFCONF" \
-    && echo "ffmpeg.exe: mapowanie tonów libplacebo (Vulkan, jak w mpv)" \
-    || echo "UWAGA: ffmpeg.exe bez libplacebo — mapowanie tonów gorszej jakości (OpenCL / CPU)"
+    && echo "biblioteki FFmpeg: mapowanie tonów libplacebo (Vulkan, jak w mpv)" \
+    || echo "UWAGA: biblioteki FFmpeg bez libplacebo — mapowanie tonów gorszej jakości (OpenCL / CPU)"
 grep -q "^#define CONFIG_TONEMAP_OPENCL_FILTER 1" <<<"$FFCONF" \
-    && echo "ffmpeg.exe: mapowanie tonów na GPU (tonemap_opencl)" \
-    || echo "UWAGA: ffmpeg.exe bez tonemap_opencl — mapowanie tonów HDR → SDR na CPU (zscale)"
+    && echo "biblioteki FFmpeg: mapowanie tonów na GPU (tonemap_opencl)" \
+    || echo "UWAGA: biblioteki FFmpeg bez tonemap_opencl — mapowanie tonów HDR → SDR na CPU (zscale)"
+
+# ------------------------------------------------------------------ aplikacja
+log "3/5 videopipeline.exe + videopipeline_core.dll ($TARGET_CPU, na bibliotekach FFmpeg $FFMPEG_VERSION)"
+# RUSTFLAGS zastępuje .cargo/config.toml — prefer-dynamic podajemy jawnie (biblioteka core jako DLL).
+# app/build.rs wkompilowuje ikonę i informacje o wersji przez windres.
+# ffmpeg-sys-next: nagłówki i biblioteki importu z FFMPEG_DIR; bindgen (clang) z nagłówkami MinGW.
+# Nagłówki MinGW wciągają wszystkie intrinsics clanga, a typów AMX (__tile1024i, align 64 w strukturze
+# packed) bindgen nie umie przełożyć na Rusta — pomijamy te nagłówki przez ich strażniki #define.
+AMX_SKIP="$(for h in "$(clang -print-resource-dir)"/include/amx*.h; do
+    sed -nE 's/^#define (__AMX[A-Z0-9_]*_H)\b.*/-D\1/p' "$h" | head -n1; done | tr '\n' ' ')"
+FFMPEG_DIR="$FFPREFIX" BINDGEN_EXTRA_CLANG_ARGS="--target=$RTARGET --sysroot=/usr/$TRIPLE $AMX_SKIP" \
+    WINDRES="$TRIPLE-windres" RUSTFLAGS="-C prefer-dynamic -C target-cpu=$TARGET_CPU" \
+    cargo build --release --target "$RTARGET"
+OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
+[[ -f "$OUT/videopipeline.exe" && -f "$OUT/videopipeline_core.dll" ]] || fail "brak videopipeline.exe / videopipeline_core.dll"
+STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
 
 # ------------------------------------------------------------------ 5. MediaInfo.dll, mpv, terminal
 log "4/5 MediaInfo $MEDIAINFO_VERSION (MediaInfo.dll), mpv, terminal"
@@ -450,8 +440,8 @@ fi
 log "5/5 składanie $PKGNAME.zip"
 rm -rf "$PKG" && mkdir -p "$PKG"
 cp "$OUT/videopipeline.exe" "$OUT/videopipeline_core.dll" "$STD_DLL" "$PKG/"
-cp "$LAVPREFIX"/bin/{avformat,avcodec,avutil}-*.dll "$PKG/"
-cp "$FFPREFIX/bin/ffmpeg.exe" "$PKG/"   # ffprobe.exe niepotrzebny — odczyt plików przez avformat-*.dll
+# Biblioteki FFmpeg — cały silnik programu (bez ffmpeg.exe / ffprobe.exe).
+cp "$FFPREFIX"/bin/{avformat,avcodec,avutil,avfilter,swscale,swresample}-*.dll "$PKG/"
 # MediaInfo.dll (+ DLL z jej paczki) — program ładuje ją z własnego katalogu.
 for d in "$MI"/*.dll; do
     if [[ -f "$d" ]]; then cp "$d" "$PKG/"; fi
@@ -466,7 +456,7 @@ cp "$MPVW/mpv.exe" "$PKG/"
 for d in "$MPVW"/*.dll; do
     if [[ -f "$d" ]]; then cp "$d" "$PKG/"; fi
 done
-"$TRIPLE-strip" "$PKG/ffmpeg.exe" "$PKG"/av{format,codec,util}-*.dll 2>/dev/null || true
+"$TRIPLE-strip" "$PKG"/av{format,codec,util,filter}-*.dll "$PKG"/sw{scale,resample}-*.dll 2>/dev/null || true
 
 # Ikona w zasobach videopipeline.exe (sekcja .rsrc z app/build.rs).
 "$TRIPLE-objdump" -h "$PKG/videopipeline.exe" | grep '\.rsrc' >/dev/null || fail "videopipeline.exe bez zasobów (ikony) — sprawdź windres"
