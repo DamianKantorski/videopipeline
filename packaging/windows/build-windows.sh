@@ -124,8 +124,6 @@ echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, Medi
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 
-[[ -n "$STD_DLL" ]] || fail "brak std-*.dll celu $RTARGET"
-
 # ------------------------------------------------------------------ 3. biblioteki statyczne
 log "1/5 dav1d $DAV1D_REF, libvpl $LIBVPL_REF, nv-codec-headers (statycznie, MinGW)"
 CROSSFILE="$WORK/meson-cross.txt"
@@ -356,6 +354,7 @@ FFMPEG_DIR="$FFPREFIX" BINDGEN_EXTRA_CLANG_ARGS="--target=$RTARGET --sysroot=/us
 OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
 [[ -f "$OUT/videopipeline.exe" && -f "$OUT/videopipeline_core.dll" ]] || fail "brak videopipeline.exe / videopipeline_core.dll"
 STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
+[[ -n "$STD_DLL" ]] || fail "brak std-*.dll celu $RTARGET"
 
 # ------------------------------------------------------------------ 5. MediaInfo.dll, mpv, terminal
 log "4/5 MediaInfo $MEDIAINFO_VERSION (MediaInfo.dll), mpv, terminal"
