@@ -11,14 +11,17 @@ pub fn play(file: &Path) -> Result<String, String> {
         return Err("Brak środowiska graficznego (DISPLAY/WAYLAND_DISPLAY) — mpv nie ma gdzie wyświetlić obrazu".into());
     }
     let mpv = find_mpv().ok_or_else(|| {
-        "Nie znaleziono mpv — paczki VideoPipeline go zawierają; przy buildzie ze źródeł zainstaluj mpv w systemie"
-            .to_string()
+        if cfg!(windows) {
+            "Nie znaleziono mpv — uruchom zainstaluj-mpv.cmd z folderu VideoPipeline (instaluje mpv w Program Files)"
+        } else {
+            "Nie znaleziono mpv — zainstaluj go z repozytorium dystrybucji (np. sudo apt install mpv / sudo pacman -S mpv)"
+        }
+        .to_string()
     })?;
     let mut cmd = Command::new(&mpv);
     cmd.arg("--force-window=yes").arg("--").arg(file);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    // mpv z paczki ma swoje biblioteki obok (rpath) i może potrzebować zapasowych kopii z AppImage;
-    // mpv z systemu nie może ich widzieć.
+    // mpv z systemu nie może widzieć zapasowych bibliotek AppImage.
     if !is_bundled(&mpv) {
         clean_env(&mut cmd);
     }
@@ -59,7 +62,8 @@ fn is_bundled(mpv: &Path) -> bool {
     exe_dir().is_some_and(|d| mpv.parent() == Some(d.as_path()))
 }
 
-/// Najpierw mpv z paczki (obok binarki), potem z PATH, a na Windows także z typowych miejsc instalacji.
+/// mpv obok binarki (gdyby ktoś go tam położył), potem z PATH, a na Windows także z typowych miejsc instalacji
+/// (Program Files\\mpv — tam instaluje go zainstaluj-mpv.cmd).
 fn find_mpv() -> Option<PathBuf> {
     let exe = format!("mpv{}", std::env::consts::EXE_SUFFIX);
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();

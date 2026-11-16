@@ -2,7 +2,7 @@
 # Buduje dist/VideoPipeline-<wersja>-x86_64_v3.AppImage z dołączonymi narzędziami:
 #   biblioteki dynamiczne FFmpeg — libavformat, libavcodec, libavfilter, libavutil, libswscale, libswresample
 #   (NVENC/NVDEC/CUDA-LLVM; Intel QSV/VAAPI z libva/libvpl; libplacebo) — na nich działa cały program,
-#   biblioteka MediaInfo (libmediainfo, okienko F2) oraz odtwarzacz mpv (F3, budowany ze źródeł; MPV_VERSION)
+#   biblioteka MediaInfo (libmediainfo, okienko F2). Odtwarzacz mpv (F3) — systemowy, nie z paczki.
 #   i terminal videopipeline-term (Alacritty ze źródeł z ikoną VideoPipeline; ALACRITTY_VERSION).
 # Kod własny (videopipeline, biblioteka core, ffmpeg) jest kompilowany
 # z -march/-C target-cpu=x86-64-v3. Sterowniki NVIDIA pochodzą z hosta i NIE są dołączane.
@@ -11,7 +11,7 @@
 #   build-essential nasm pkg-config clang libclang-dev patchelf file wget git libmediainfo0v5 libdav1d-dev zlib1g-dev
 #   + rustup/cargo. Uruchamiane w CI przez .github/workflows/release.yml, ale działa też lokalnie.
 #
-# Zmienne: VERSION, FFMPEG_VERSION, NVCODEC_HEADERS_REF (domyślnie master), MPV_VERSION, ALACRITTY_VERSION
+# Zmienne: VERSION, FFMPEG_VERSION, NVCODEC_HEADERS_REF (domyślnie master), ALACRITTY_VERSION
 # ("latest" = najnowsze wydanie), INTEL=auto|1|0 (VAAPI + QSV/libvpl w ffmpeg),
 # TARGET_CPU, JOBS, FORCE=1. Zalecane uruchamianie: ./build-local.sh (Docker, Debian 13).
 set -euo pipefail
@@ -22,8 +22,6 @@ cd "$ROOT"
 VERSION="${VERSION:-$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.1}"
 NVCODEC_HEADERS_REF="${NVCODEC_HEADERS_REF:-}"
-# Odtwarzacz mpv (F3) — budowany ze źródeł (tag vX.Y.Z z github.com/mpv-player/mpv); "latest" = najnowsze wydanie.
-MPV_VERSION="${MPV_VERSION:-latest}"
 # Terminal dołączony do paczek: Alacritty (tag vX.Y.Z) z ikoną VideoPipeline, jako videopipeline-term.
 ALACRITTY_VERSION="${ALACRITTY_VERSION:-latest}"
 TARGET_CPU="${TARGET_CPU:-x86-64-v3}"
@@ -32,7 +30,7 @@ JOBS="${JOBS:-$(nproc)}"
 FORCE="${FORCE:-0}"
 
 BUILD="$ROOT/build"
-CACHE="$BUILD/cache"     # trwałe artefakty (cache w CI): ffmpeg, biblioteki FFmpeg, mpv, linuxdeploy
+CACHE="$BUILD/cache"     # trwałe artefakty (cache w CI): ffmpeg, biblioteki FFmpeg, linuxdeploy
 WORK="$BUILD/work"       # katalog roboczy (AppDir)
 APPDIR="$WORK/AppDir"
 DIST="$ROOT/dist"
@@ -84,7 +82,7 @@ NVH="$CACHE/nv-codec-headers"
 # libplacebo dla ffmpeg (filtr libplacebo: mapowanie tonów HDR → SDR jak w mpv, skalowanie na GPU
 # przez Vulkan). Statycznie i bez linkowania z libvulkan — ffmpeg ładuje sterownik Vulkan w trakcie
 # działania. Kompilator shaderów: shaderc z systemu (linuxdeploy dołączy libshaderc).
-# LIBPLACEBO_REF=latest → najnowszy tag v7.x (wspólny z mpv niżej).
+# LIBPLACEBO_REF=latest → najnowszy tag v7.x.
 LIBPLACEBO_REF="${LIBPLACEBO_REF:-latest}"
 if [[ "$LIBPLACEBO_REF" = latest ]]; then
     LIBPLACEBO_REF="$({ GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --tags --refs https://github.com/haasn/libplacebo.git 2>/dev/null || true; } \
@@ -198,48 +196,6 @@ REL="${CARGO_TARGET_DIR:-target}/release"
 [[ -x "$REL/videopipeline" && -f "$REL/libvideopipeline_core.so" ]] \
     || fail "build.sh nie wytworzył binarki/biblioteki"
 
-# --------------------------------------------------------------------------- 3b. mpv
-# Budowany ze źródeł z bibliotekami Debiana (libass, libav*, Lua… z systemu kontenera) — linuxdeploy
-# dołączy je do paczki. libplacebo z Debiana bywa za stara dla nowego mpv, więc jest budowana razem
-# z mpv jako podprojekt meson (statycznie; LIBPLACEBO_REF, domyślnie najnowszy tag tej samej
-# wersji głównej, co wymagana przez mpv). Sterowniki grafiki (GL/EGL/Vulkan), X11/Wayland i ALSA są z hosta.
-if [[ "$MPV_VERSION" = latest ]]; then
-    MPV_VERSION="$({ GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --tags --refs https://github.com/mpv-player/mpv.git 2>/dev/null || true; } \
-        | sed 's|.*refs/tags/||' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sed 's/^v//' | sort -V | tail -n1)"
-    if [[ -z "$MPV_VERSION" ]]; then
-        MPV_VERSION="$(ls -1d "$CACHE"/mpv-* 2>/dev/null | sed 's|.*/mpv-||' | sort -V | tail -n1)"
-    fi
-    [[ -n "$MPV_VERSION" ]] || fail "nie udało się ustalić wersji mpv — podaj MPV_VERSION=..."
-fi
-log "3a/4 mpv $MPV_VERSION (ze źródeł, $TARGET_CPU)"
-MPVPREFIX="$CACHE/mpv-$MPV_VERSION"
-if [[ "$FORCE" = 1 || ! -x "$MPVPREFIX/bin/mpv" ]]; then
-    rm -rf "$WORK/mpv" "$MPVPREFIX"
-    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$MPV_VERSION" \
-        https://github.com/mpv-player/mpv.git "$WORK/mpv"
-    if [[ "$LIBPLACEBO_REF" = latest ]]; then
-        # Wymagana wersja z meson.build mpv, np. ">=7.387.0" → najnowszy tag v7.x.y.
-        need_pl="$(grep -oE "libplacebo', *version: *'>= *[0-9.]+" "$WORK/mpv/meson.build" | grep -oE '[0-9]+(\.[0-9]+)+$' || true)"
-        pl_major="${need_pl%%.*}"
-        LIBPLACEBO_REF="$({ GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --tags --refs https://github.com/haasn/libplacebo.git 2>/dev/null || true; } \
-            | sed 's|.*refs/tags/||' | { grep -E "^v${pl_major:-[0-9]+}\.[0-9]+\.[0-9]+\$" || true; } | sed 's/^v//' | sort -V | tail -n1)"
-        [[ -n "$LIBPLACEBO_REF" ]] || fail "nie udało się ustalić wersji libplacebo (mpv wymaga ${need_pl:-?}) — podaj LIBPLACEBO_REF=..."
-        echo "libplacebo $LIBPLACEBO_REF (mpv wymaga >= ${need_pl:-?})"
-    fi
-    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$LIBPLACEBO_REF" \
-        --recurse-submodules --shallow-submodules \
-        https://github.com/haasn/libplacebo.git "$WORK/mpv/subprojects/libplacebo"
-    meson setup "$WORK/mpv/build" "$WORK/mpv" --prefix="$MPVPREFIX" --buildtype=release \
-        --force-fallback-for=libplacebo \
-        -Dlibplacebo:demos=false -Dlibplacebo:tests=false -Dlibplacebo:vulkan=enabled \
-        -Dlibplacebo:opengl=enabled -Dlibplacebo:shaderc=enabled -Dlibplacebo:lcms=enabled \
-        -Dlibmpv=false -Dcplayer=true -Dc_args="-march=$TARGET_CPU"
-    meson compile -C "$WORK/mpv/build" -j "$JOBS"
-    meson install -C "$WORK/mpv/build" >/dev/null
-fi
-[[ -x "$MPVPREFIX/bin/mpv" ]] || fail "brak $MPVPREFIX/bin/mpv"
-"$MPVPREFIX/bin/mpv" --no-config --version | sed -n 1p
-
 # --------------------------------------------------------------- 3c. terminal (Alacritty)
 # Okno z TUI otwierane z menu ma własną ikonę na pasku zadań i w ramce: Alacritty z podmienioną
 # ikoną (X11) i klasą/app-id „videopipeline” (Wayland → videopipeline.desktop), pod inną nazwą pliku,
@@ -298,7 +254,6 @@ done
 # ffprobe niepotrzebny — informacje o plikach program czyta przez libavformat.
 # libmediainfo nie jest w NEEDED (program ładuje ją sam) — kopia i jej zależności przez linuxdeploy --library.
 cp -L "$MEDIAINFO_SO" "$APPDIR/usr/lib/libmediainfo.so.0"
-install -m755 "$MPVPREFIX/bin/mpv" "$APPDIR/usr/bin/"
 install -m755 "$TERMDIR/videopipeline-term" "$APPDIR/usr/bin/"
 install -m644 packaging/videopipeline-term.toml "$APPDIR/usr/bin/"
 install -m644 packaging/appimage/videopipeline.desktop "$APPDIR/usr/share/applications/"
@@ -346,7 +301,6 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
     "$BIN/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/videopipeline" \
-        --executable "$APPDIR/usr/bin/mpv" \
         --executable "$APPDIR/usr/bin/videopipeline-term" \
         --library "$APPDIR/usr/lib/libmediainfo.so.0" \
         --desktop-file "$APPDIR/usr/share/applications/videopipeline.desktop" \

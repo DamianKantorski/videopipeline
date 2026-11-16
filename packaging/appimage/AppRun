@@ -1,6 +1,6 @@
 #!/bin/sh
 # Punkt wejścia AppImage: sprawdza CPU (x86-64-v3), ustawia PATH na dołączone narzędzia
-# (mpv, terminal) i uruchamia videopipeline.
+# (terminal) i uruchamia videopipeline. mpv (F3) jest systemowy.
 HERE="$(dirname "$(readlink -f "$0")")"
 export APPDIR="${APPDIR:-$HERE}"
 

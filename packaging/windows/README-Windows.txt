@@ -6,8 +6,19 @@ Uruchamianie
   (dwuklik otwiera okno konsoli). Najlepiej wygląda w Windows Terminal.
   Wszystkie pliki muszą zostać w jednym folderze: program używa dołączonych
   bibliotek FFmpeg (avformat-*.dll, avcodec-*.dll, avfilter-*.dll, avutil-*.dll, swscale-*.dll,
-  swresample-*.dll), MediaInfo.dll (okienko F2),
-  mpv.exe (odtwarzanie pod F3) i videopipeline-term.exe (okno programu).
+  swresample-*.dll), MediaInfo.dll (okienko F2) i videopipeline-term.exe (okno programu).
+
+Odtwarzacz mpv (F3)
+  mpv nie jest w paczce. zainstaluj-mpv.cmd (prosi o uprawnienia administratora) pobiera
+  najnowsza kompilacje mpv - x86-64-v3, gdy procesor ma AVX2 - i instaluje ja w
+  "Program Files\mpv". Ponowne uruchomienie aktualizuje mpv do najnowszej wersji.
+  Skrypt dodaje tez mpv do "Otworz za pomoca", Programow domyslnych, menu Start i PATH.
+  Typy plikow bez zadnego programu od razu otwieraja sie w mpv; dla pozostalych Windows
+  nie pozwala skryptom zmienic domyslnego programu, wiec skrypt otwiera Ustawienia ->
+  Aplikacje domyslne - wybierz tam mpv dla .mkv, .mp4 itd.
+    zainstaluj-mpv.cmd -BezSkojarzen   bez skojarzen z plikami
+    zainstaluj-mpv.cmd -Odinstaluj     usuniecie mpv i skojarzen
+  Program znajdzie tez mpv zainstalowany inaczej (PATH, scoop, Chocolatey).
 
   Tryb skryptowy (PowerShell / cmd):
     .\videopipeline.exe film.mkv D:\Filmy\
@@ -31,7 +42,7 @@ Uwagi
     działa w zwykłej konsoli Windows.
   - utworz-skrot.cmd tworzy skrót "VideoPipeline" na pulpicie i w menu Start;
     skrót można przypiąć do paska zadań.
-  - F3 otwiera plik w dołączonym mpv w osobnym oknie (q zamyka odtwarzacz).
+  - F3 otwiera plik w mpv w osobnym oknie (q zamyka odtwarzacz).
   - W lewym panelu, w katalogu głównym dysku, widać pozostałe dyski (C:, D: …).
 
 Licencja: GNU GPL v3 (LICENSE.txt). Licencje dołączonych programów: THIRD-PARTY-NOTICES.md.

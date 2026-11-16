@@ -66,13 +66,14 @@ Architecture: amd64
 Installed-Size: ${SIZE}
 Depends: libc6 (>= 2.41), libstdc++6, libgcc-s1${INTEL_DEPS}
 Recommends: intel-media-va-driver-non-free | intel-media-va-driver, libmfx-gen1.2
-Suggests: nvidia-driver
+Suggests: nvidia-driver, mpv
 Maintainer: VideoPipeline <noreply@users.noreply.github.com>
 Homepage: https://github.com/8brzrs26ws-cloud/videopipeline
 Description: Kodowanie wideo HEVC/AV1 na GPU (NVIDIA NVENC, Intel QSV/VAAPI) z TUI w stylu MC
  Zawiera własne biblioteki FFmpeg (NVENC/NVDEC/CUDA, Intel VAAPI/QSV)
  i MediaInfo w /opt/videopipeline. Wymaga sterownika GPU z systemu
- oraz procesora x86-64-v3 (Haswell / Zen 1 i nowsze).
+ oraz procesora x86-64-v3 (Haswell / Zen 1 i nowsze). Odtwarzanie pod F3
+ korzysta z systemowego mpv (opcjonalnie — na serwerze bez grafiki zbędny).
 C
 
 mkdir -p "$DIST"

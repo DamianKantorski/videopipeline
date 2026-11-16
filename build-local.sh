@@ -4,7 +4,7 @@
 #   dist/videopipeline_<wersja>_amd64.deb            (Debian/Ubuntu)
 #   dist/videopipeline-<wersja>-1-x86_64.pkg.tar.zst (Arch/CachyOS)
 #   dist/VideoPipeline-<wersja>-windows-x86_64_v3.zip (Windows x64, kroskompilacja MinGW)
-# Cache (ffmpeg, biblioteki FFmpeg, mpv, crate'y) zostaje w ./build, więc kolejne budowania są szybkie.
+# Cache (ffmpeg, biblioteki FFmpeg, crate'y) zostaje w ./build, więc kolejne budowania są szybkie.
 #
 # Użycie:  ./build-local.sh            # Linux i Windows
 #          ./build-local.sh linux      # tylko AppImage, deb i pakiet Arch
@@ -49,7 +49,7 @@ export FFMPEG_VERSION="${FFMPEG_VERSION:-latest}"
 
 PASS=()
 for v in FFMPEG_VERSION DOVI_TOOL_REF HDR10PLUS_TOOL_REF NVCODEC_HEADERS_REF INTEL TARGET_CPU FORCE JOBS VERSION \
-         TARGETS DAV1D_REF LIBVPL_REF MKVTOOLNIX_VERSION MEDIAINFO_VERSION MPV_VERSION MPV_WIN_TAG LIBPLACEBO_REF ALACRITTY_VERSION ZIMG_REF OPENCL_REF VULKAN_HEADERS_REF GLSLANG_REF; do
+         TARGETS DAV1D_REF LIBVPL_REF MEDIAINFO_VERSION LIBPLACEBO_REF ALACRITTY_VERSION ZIMG_REF OPENCL_REF VULKAN_HEADERS_REF GLSLANG_REF; do
     [[ -n "${!v:-}" ]] && PASS+=(-e "$v=${!v}")
 done
 

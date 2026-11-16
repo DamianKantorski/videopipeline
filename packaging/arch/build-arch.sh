@@ -34,7 +34,7 @@ if [[ -d "$PKG/usr/share/doc/videopipeline" ]]; then
 fi
 
 # Zależności: jak w deb — libva/libdrm/oneVPL tylko gdy ffmpeg zbudowano z Intelem (deb ma je w Depends).
-DEPENDS=("glibc>=2.41" "gcc-libs")
+DEPENDS=("glibc>=2.41" "gcc-libs" "mpv")
 if grep -q '^Depends:.*libvpl2' "$DEBTREE/DEBIAN/control"; then
     DEPENDS+=("libva" "libdrm" "libvpl")
 fi

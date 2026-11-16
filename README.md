@@ -96,7 +96,7 @@ po lewej pliki, po prawej kolejkę kodowania.
 | Shift+↑↓ / PgUp / PgDn / Home / End | zaznaczanie wielu pozycji |
 | `+` `-` `*` | zaznacz wszystko / wyczyść / odwróć |
 | F2 | informacje o pliku (MediaInfo, w stylu widoku „Easy”): kontener, rozmiar, czas, każdy strumień wideo/audio/napisów w jednej linii; ↑↓ przewijanie, Esc zamyka |
-| F3 | odtwórz plik (lewy panel) lub pozycję kolejki w [mpv](https://mpv.io) — tylko w TUI i w środowisku graficznym (X11/Wayland, Windows). mpv jest dołączony do paczek; przy buildzie ze źródeł używany jest mpv z systemu |
+| F3 | odtwórz plik (lewy panel) lub pozycję kolejki w [mpv](https://mpv.io) — tylko w TUI i w środowisku graficznym (X11/Wayland, Windows). mpv **nie jest w paczkach** — używany jest systemowy: pakiet Arch ma go w zależnościach, deb w `Suggests` (opcjonalnie, np. na serwerze bez grafiki), AppImage korzysta z mpv zainstalowanego w systemie, a na Windows instaluje go `zainstaluj-mpv.cmd` (niżej) |
 | F4 | zmień nazwę pliku lub katalogu w lewym panelu (kursor stoi przed rozszerzeniem — wygodne dopisanie np. `_v2`); przy kilku zaznaczonych plikach albo po Tab — **zmiana nazw wielu plików** (niżej) |
 | F5 | dodaj zaznaczone do kolejki (katalog = wszystkie filmy w nim) |
 | Ctrl+F | **znajdź plik** po fragmencie nazwy (niżej) |
@@ -306,9 +306,14 @@ i leżeć w tym samym katalogu (albo binarka w `bin/`, biblioteka w `../lib/`).
 Wydania buduje się w kontenerze Debian 13, więc wynik nie zależy od systemu, na którym budujesz. Wersja dla Windows
 powstaje tam przez kroskompilację (MinGW-w64, cel Rusta `x86_64-pc-windows-gnu`): aplikacja, dav1d, libvpl
 i biblioteki FFmpeg (DLL) są kompilowane ze źródeł, a MediaInfo.dll pochodzi z oficjalnej paczki MediaArea.
-Odtwarzacz mpv (F3) dla Linuksa jest kompilowany ze źródeł; dla Windows dołączany jest gotowy build
-[shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) (x86-64-v3), bo kroskompilacja mpv
-z całym drzewem zależności byłaby bardzo długa.
+Odtwarzacz mpv (F3) nie jest dołączany do żadnej paczki. Na Linuksie program używa mpv z systemu (Arch: zależność
+pakietu; deb: `Suggests: mpv`). Paczka dla Windows zawiera `zainstaluj-mpv.cmd`: skrypt pobiera najnowszą kompilację
+[shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) — wariant x86-64-v3, gdy procesor ma
+AVX2, inaczej ogólny x86-64 — i instaluje ją w `Program Files\mpv` (z uprawnieniami administratora; ponowne
+uruchomienie aktualizuje). Rejestruje też mpv w systemie: „Otwórz za pomocą”, Programy domyślne, menu Start, PATH.
+Rozszerzenia wideo bez żadnego programu dostają mpv od razu; dla pozostałych Windows nie pozwala skryptowi zmienić
+domyślnego programu, więc skrypt otwiera Ustawienia → Aplikacje domyślne na stronie mpv. `-BezSkojarzen` pomija
+skojarzenia, `-Odinstaluj` usuwa mpv i wpisy w rejestrze.
 
     ./install-build-deps.sh     # raz: Docker, git, gh (Arch/CachyOS, Debian/Ubuntu); potem wyloguj się i zaloguj
     ./build-local.sh            # dist/: AppImage, deb, pakiet Arch, .zip dla Windows i sumy .sha256; cache w ./build
@@ -323,10 +328,8 @@ Zmienne dla `build-local.sh`:
 | `FFMPEG_VERSION` | wersja FFmpeg (biblioteki), domyślnie `latest` (najnowsze wydanie) |
 | `INTEL` | Linux: `auto` (domyślnie), `1` — wymagaj QSV/VAAPI, `0` — bez Intela |
 | `DAV1D_REF`, `LIBVPL_REF`, `MEDIAINFO_VERSION` | Windows: wersje bibliotek i MediaInfo.dll, domyślnie `latest` |
-| `MPV_VERSION` | Linux: wersja mpv budowanego ze źródeł (np. `0.41.0`), domyślnie `latest` |
-| `LIBPLACEBO_REF` | Linux: wersja libplacebo budowanej razem z mpv, domyślnie `latest` (najnowsza zgodna z wymaganiem mpv) |
+| `LIBPLACEBO_REF` | Linux: wersja libplacebo w bibliotekach FFmpeg, domyślnie `latest` (najnowsza 7.x) |
 | `ALACRITTY_VERSION` | wersja Alacritty (terminal `videopipeline-term`), domyślnie `latest` |
-| `MPV_WIN_TAG` | Windows: tag wydania shinchiro (data, np. `20261108`), domyślnie `latest` |
 | `TARGET_CPU` | domyślnie `x86-64-v3` |
 | `FORCE=1` | przebuduj biblioteki FFmpeg i narzędzia mimo cache |
 | `DOCKER=podman` | Podman zamiast Dockera |

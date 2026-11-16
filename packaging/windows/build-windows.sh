@@ -4,7 +4,7 @@
 # Zawartość: videopipeline.exe + videopipeline_core.dll + std-*.dll, biblioteki FFmpeg jako DLL
 # (avformat, avcodec, avfilter, avutil, swscale, swresample — NVENC/NVDEC/CUDA-LLVM, Intel QSV przez
 # oneVPL + D3D11, dav1d, zimg, libplacebo wkompilowane statycznie), MediaInfo.dll (oficjalna biblioteka
-# MediaArea, okienko F2), mpv.exe i videopipeline-term.exe. Bez ffmpeg.exe — program sam wywołuje biblioteki.
+# MediaArea, okienko F2), videopipeline-term.exe i zainstaluj-mpv.cmd (mpv do Program Files). Bez ffmpeg.exe — program sam wywołuje biblioteki.
 # Sterowniki GPU (NVIDIA, Intel) pochodzą z systemu Windows.
 #
 # Zmienne: VERSION, FFMPEG_VERSION (latest = najnowsze wydanie),
@@ -27,8 +27,6 @@ VULKAN_HEADERS_REF="${VULKAN_HEADERS_REF:-latest}"
 GLSLANG_REF="${GLSLANG_REF:-latest}"
 LIBPLACEBO_REF="${LIBPLACEBO_REF:-latest}"
 MEDIAINFO_VERSION="${MEDIAINFO_VERSION:-latest}"
-# mpv (F3): gotowa kompilacja shinchiro/mpv-winbuild-cmake (tag = data, np. 20261108); "latest" = najnowsza.
-MPV_WIN_TAG="${MPV_WIN_TAG:-latest}"
 # Terminal dołączony do paczki: Alacritty (tag vX.Y.Z) z ikoną VideoPipeline, jako videopipeline-term.exe.
 ALACRITTY_VERSION="${ALACRITTY_VERSION:-latest}"
 NVCODEC_HEADERS_REF="${NVCODEC_HEADERS_REF:-}"
@@ -43,7 +41,7 @@ CC_W="$TRIPLE-gcc-posix"
 CXX_W="$TRIPLE-g++-posix"
 
 BUILD="$ROOT/build"
-CACHE="$BUILD/cache/win64"   # trwałe: zależności statyczne, ffmpeg, biblioteki FFmpeg, MediaInfo, mpv
+CACHE="$BUILD/cache/win64"   # trwałe: zależności statyczne, ffmpeg, biblioteki FFmpeg, MediaInfo
 WORK="$BUILD/work/win64"
 PKGNAME="VideoPipeline-$VERSION-windows-x86_64_v3"
 PKG="$WORK/$PKGNAME"
@@ -102,25 +100,13 @@ mediainfo_latest() {
     echo "$v"
 }
 resolve MEDIAINFO_VERSION "github.com/MediaArea/MediaInfo" mediainfo_latest
-# mpv dla Windows: najnowsze wydanie shinchiro (API GitHuba), zapasowo wersja pobrana wcześniej do cache.
-mpv_win_latest() {
-    local v; v="$({ wget -qO- --timeout=20 --tries=2 https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest || true; } \
-        | { grep -oE '"tag_name": *"[^"]+"' || true; } | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
-    [[ -n "$v" ]] || v="$(latest_git_tag https://github.com/shinchiro/mpv-winbuild-cmake.git)"
-    if [[ -z "$v" ]]; then
-        v="$(ls -1d "$CACHE"/mpv-win-* 2>/dev/null | sed 's|.*/mpv-win-||' | sort -V | tail -n1)"
-        [[ -n "$v" ]] && echo "UWAGA: GitHub niedostępny — używam pobranego wcześniej mpv $v" >&2
-    fi
-    echo "$v"
-}
-resolve MPV_WIN_TAG "github.com/shinchiro/mpv-winbuild-cmake" mpv_win_latest
 alacritty_latest() {
     local v; v="$(latest_git_tag https://github.com/alacritty/alacritty.git)"
     [[ -n "$v" ]] || v="$(ls -1d "$CACHE"/alacritty-* 2>/dev/null | sed -E 's|.*/alacritty-([0-9.]+)-.*|\1|' | sort -V | tail -n1)"
     echo "$v"
 }
 resolve ALACRITTY_VERSION "github.com/alacritty/alacritty" alacritty_latest
-echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, MediaInfo $MEDIAINFO_VERSION, mpv $MPV_WIN_TAG, Alacritty $ALACRITTY_VERSION"
+echo "Wersje: ffmpeg $FFMPEG_VERSION, dav1d $DAV1D_REF, libvpl $LIBVPL_REF, MediaInfo $MEDIAINFO_VERSION, Alacritty $ALACRITTY_VERSION"
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$TRIPLE-gcc"
 
@@ -356,8 +342,8 @@ OUT="${CARGO_TARGET_DIR:-target}/$RTARGET/release"
 STD_DLL="$(find "$(rustc --print sysroot)/lib/rustlib/$RTARGET" -name 'std-*.dll' | head -n1)"
 [[ -n "$STD_DLL" ]] || fail "brak std-*.dll celu $RTARGET"
 
-# ------------------------------------------------------------------ 5. MediaInfo.dll, mpv, terminal
-log "4/5 MediaInfo $MEDIAINFO_VERSION (MediaInfo.dll), mpv, terminal"
+# ------------------------------------------------------------------ 5. MediaInfo.dll, terminal
+log "4/5 MediaInfo $MEDIAINFO_VERSION (MediaInfo.dll), terminal"
 # Biblioteka MediaInfo (oficjalna paczka DLL MediaArea dla Windows x64) — ładowana przez program.
 MI="$CACHE/mediainfo-dll-$MEDIAINFO_VERSION"
 if [[ ! -f "$MI/MediaInfo.dll" ]]; then
@@ -384,24 +370,6 @@ if [[ ! -f "$MI/MediaInfo.dll" ]]; then
     done
     rm -rf "$MI/x"
     [[ -f "$MI/MediaInfo.dll" ]] || fail "brak $MI/MediaInfo.dll"
-fi
-
-# mpv (odtwarzacz pod F3). Kompilacja skrośna mpv z zależnościami (libplacebo, libass, ANGLE/Vulkan…)
-# jest bardzo ciężka, więc bierzemy gotowy, statycznie zlinkowany build
-# shinchiro/mpv-winbuild-cmake w wariancie x86-64-v3 (Linux: mpv kompilowany ze źródeł).
-MPVW="$CACHE/mpv-win-$MPV_WIN_TAG"
-if [[ ! -f "$MPVW/mpv.exe" ]]; then
-    REL="$WORK/mpv-release.json"
-    wget -qO "$REL" "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/tags/$MPV_WIN_TAG" \
-        || fail "nie udało się pobrać listy plików mpv $MPV_WIN_TAG z GitHuba"
-    URL="$({ grep -oE '"browser_download_url": *"[^"]+/mpv-x86_64-v3-[^"/]+\.7z"' "$REL" || true; } \
-        | grep -v -- '-dev-' | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
-    [[ -n "$URL" ]] || fail "w wydaniu mpv $MPV_WIN_TAG brak archiwum mpv-x86_64-v3-*.7z"
-    ARCHIVE="$WORK/$(basename "$URL")"
-    wget -nv -O "$ARCHIVE" "$URL" || fail "nie udało się pobrać $URL"
-    rm -rf "$MPVW" && mkdir -p "$MPVW"
-    "$SEVENZ" x -y -o"$MPVW" "$ARCHIVE" >/dev/null
-    [[ -f "$MPVW/mpv.exe" ]] || fail "w archiwum mpv brak mpv.exe"
 fi
 
 # Terminal (Alacritty) — okno z TUI z ikoną VideoPipeline na pasku zadań i w ramce okna.
@@ -450,11 +418,6 @@ if [[ -f "$TERMW/videopipeline-term.exe" ]]; then
     cp "$TERMW/videopipeline-term.exe" "$TERMW/LICENSE-ALACRITTY.txt" "$PKG/"
     cp packaging/videopipeline-term.toml "$PKG/"
 fi
-# mpv.exe (+ ewentualne DLL z paczki); program szuka mpv najpierw obok videopipeline.exe.
-cp "$MPVW/mpv.exe" "$PKG/"
-for d in "$MPVW"/*.dll; do
-    if [[ -f "$d" ]]; then cp "$d" "$PKG/"; fi
-done
 "$TRIPLE-strip" "$PKG"/av{format,codec,util,filter}-*.dll "$PKG"/sw{scale,resample}-*.dll 2>/dev/null || true
 
 # Ikona w zasobach videopipeline.exe (sekcja .rsrc z app/build.rs).
@@ -487,7 +450,7 @@ cp packaging/appimage/THIRD-PARTY-NOTICES.md "$PKG/"
 cp packaging/windows/README-Windows.txt "$PKG/"
 # Skrót „VideoPipeline” (pulpit + menu Start) uruchamiający program w klasycznej konsoli (conhost),
 # w której pasek zadań pokazuje ikonę programu. Pliki .cmd/.ps1 z końcami linii CRLF.
-for f in utworz-skrot.cmd utworz-skrot.ps1; do sed 's/$/\r/' "packaging/windows/$f" > "$PKG/$f"; done
+for f in utworz-skrot.cmd utworz-skrot.ps1 zainstaluj-mpv.cmd zainstaluj-mpv.ps1; do sed 's/$/\r/' "packaging/windows/$f" > "$PKG/$f"; done
 cp icons/videopipeline-256.png "$PKG/videopipeline.png"
 
 ZIP="$DIST/$PKGNAME.zip"
