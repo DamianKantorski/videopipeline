@@ -289,6 +289,11 @@ echo "libstd: $STD_SO"
 cp "$STD_SO" "$APPDIR/usr/lib/"
 # Biblioteki FFmpeg (z dowiązaniami .so.N, których szuka biblioteka core) — cały silnik programu.
 cp -a "$FFPREFIX"/lib/lib{avformat,avcodec,avutil,avfilter,swscale,swresample}.so.* "$APPDIR/usr/lib/"
+# Biblioteki FFmpeg nie mają rpath, a RUNPATH programu nie obejmuje zależności pośrednich (libavcodec →
+# libswresample, libavfilter → libswscale) — każda szuka pozostałych we własnym katalogu.
+for f in "$APPDIR"/usr/lib/lib{avformat,avcodec,avutil,avfilter,swscale,swresample}.so.*; do
+    [[ -L "$f" ]] || patchelf --set-rpath '$ORIGIN' "$f"
+done
 
 # ffprobe niepotrzebny — informacje o plikach program czyta przez libavformat.
 # libmediainfo nie jest w NEEDED (program ładuje ją sam) — kopia i jej zależności przez linuxdeploy --library.
