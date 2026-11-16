@@ -186,6 +186,40 @@ fn drives() -> Vec<(PathBuf, String, DriveInfo)> {
     vec![]
 }
 
+/// Kolejność w panelu plików (jak w MC): katalogi zawsze przed plikami, w obrębie każdej grupy wg klucza.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SortKey {
+    Name,
+    Size,
+    Mtime,
+}
+
+impl SortKey {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "nazwa",
+            SortKey::Size => "rozmiar",
+            SortKey::Mtime => "data modyfikacji",
+        }
+    }
+}
+
+/// Porównanie nazw jak w MC: bez rozróżniania wielkości liter, przy równych — z rozróżnieniem.
+fn cmp_name(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b))
+}
+
+fn sort_entries(v: &mut [Entry], key: SortKey, rev: bool) {
+    v.sort_by(|a, b| {
+        let o = match key {
+            SortKey::Name => cmp_name(&a.name, &b.name),
+            SortKey::Size => a.size.cmp(&b.size).then_with(|| cmp_name(&a.name, &b.name)),
+            SortKey::Mtime => a.mtime.cmp(&b.mtime).then_with(|| cmp_name(&a.name, &b.name)),
+        };
+        if rev { o.reverse() } else { o }
+    });
+}
+
 pub struct Entry {
     pub name: String,
     pub path: PathBuf,
@@ -221,6 +255,9 @@ pub struct Browser {
     pub marked: BTreeSet<PathBuf>,
     pub error: Option<String>,
     pub page: usize,
+    pub sort: SortKey,
+    /// Odwrócona kolejność (ponowny wybór tego samego klucza, jak w MC).
+    pub sort_rev: bool,
 }
 
 impl Browser {
@@ -235,6 +272,8 @@ impl Browser {
             marked: BTreeSet::new(),
             error: None,
             page: 10,
+            sort: SortKey::Name,
+            sort_rev: false,
         };
         b.reload(None);
         b
@@ -275,8 +314,8 @@ impl Browser {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
-        dirs.sort_by_key(|e| e.name.to_lowercase());
-        files.sort_by_key(|e| e.name.to_lowercase());
+        sort_entries(&mut dirs, self.sort, self.sort_rev);
+        sort_entries(&mut files, self.sort, self.sort_rev);
 
         // Na górze, przypięte i oddzielone linią: dyski (Windows) / zamontowane systemy plików (Linux).
         let mut entries = vec![];
@@ -340,6 +379,18 @@ impl Browser {
             self.pinned + self.rest.offset() + (row - self.pinned_shown)
         };
         (i < self.entries.len()).then_some(i)
+    }
+
+    /// Wybór klucza sortowania; ten sam klucz drugi raz odwraca kolejność. Kursor zostaje na tej samej pozycji.
+    pub fn set_sort(&mut self, key: SortKey) {
+        if self.sort == key {
+            self.sort_rev = !self.sort_rev;
+        } else {
+            self.sort = key;
+            self.sort_rev = false;
+        }
+        let cur = self.selected().filter(|e| e.drive.is_none() && !e.sep).map(|e| e.name.clone());
+        self.reload(cur.as_deref());
     }
 
     pub fn selected(&self) -> Option<&Entry> {

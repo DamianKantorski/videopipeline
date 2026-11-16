@@ -1,7 +1,7 @@
 //! Rysowanie TUI: dwa panele w stylu Midnight Commandera + okienka na środku.
 use crate::{
     app::{App, Focus, Mode, OPTION_COUNT},
-    browser::{Browser, Queue},
+    browser::{Browser, Queue, SortKey},
     theme::*,
 };
 use videopipeline_core::{
@@ -172,6 +172,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         height: r.height.saturating_sub(4),
     };
     app.ui.left_list = list_rect(cols[0]);
+    app.ui.left_header = Rect { x: cols[0].x + 1, y: cols[0].y + 1, width: cols[0].width.saturating_sub(2), height: 1 };
     app.ui.right_list = list_rect(cols[1]);
     app.ui.fkeys = rows[3];
 
@@ -589,7 +590,16 @@ fn render_left(f: &mut Frame, area: Rect, b: &mut Browser, active: bool, shift: 
     let parts = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).split(inner);
     let name_w = (inner.width as usize).saturating_sub(20).max(4);
 
-    f.render_widget(Paragraph::new(header_line("Nazwa", "Rozmiar", "Zmodyfikowano", name_w)), parts[0]);
+    // Strzałka przy kolumnie, wg której posortowano (↑ rosnąco, ↓ malejąco).
+    let arrow = if b.sort_rev { "↓" } else { "↑" };
+    let mark = |k: SortKey, t: &str| if b.sort == k { format!("{t}{arrow}") } else { t.to_string() };
+    let (h_name, h_size, h_date) = (
+        mark(SortKey::Name, "Nazwa"),
+        if b.sort == SortKey::Size { format!("{arrow}Rozm.") } else { "Rozmiar".into() },
+        mark(SortKey::Mtime, "Zmodyfik."),
+    );
+    let h_date = if b.sort == SortKey::Mtime { h_date } else { "Zmodyfikowano".into() };
+    f.render_widget(Paragraph::new(header_line(&h_name, &h_size, &h_date, name_w)), parts[0]);
     // Dyski przypięte u góry (zawsze widoczne), pod linią przewijana zawartość katalogu.
     let list_h = parts[1].height as usize;
     let pinned_h = b.pinned.min(list_h / 2);
@@ -843,7 +853,7 @@ fn render_options(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let rect = centered(area, 68, 29);
+    let rect = centered(area, 78, 30);
     f.render_widget(Clear, rect);
     let block = dialog_block("Pomoc", BOX_ALL);
     let inner = block.inner(rect);
@@ -868,6 +878,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         k("F4", "zmień nazwę; kilka zaznaczonych / Tab — wiele naraz"),
         k("F5", "dodaj zaznaczone (lub bieżący) do kolejki"),
         k("Ctrl+F", "znajdź plik po nazwie (bieżący katalog / podkatalogi)"),
+        k("Ctrl+F3/F5/F6", "sortuj: nazwa / data / rozmiar (2× — odwrotnie); klik nagłówka"),
         k("F6", "usuń zaznaczone pliki/katalogi z dysku (lewy panel)"),
         k("F7", "opcje: kodek i karta (NVENC/QSV/VAAPI), audio, analizy…"),
         k("F8 / Del", "usuń zaznaczone (lub bieżący) z kolejki"),

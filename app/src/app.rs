@@ -2,7 +2,7 @@
 use crate::{
     find::{FindView, F_AUTO, F_INPUT, F_RECURSIVE, F_RESULTS, F_SHOW},
     rename_many::{RenameMany, R_FIELDS, R_WITH_EXT},
-    browser::{self, AddResult, Browser, Queue},
+    browser::{self, AddResult, Browser, Queue, SortKey},
     render,
 };
 use videopipeline_core::{
@@ -75,6 +75,8 @@ pub struct MediaInfoView {
 #[derive(Default, Clone, Copy)]
 pub struct UiRects {
     pub left_list: Rect,
+    /// Wiersz nagłówka kolumn lewego panelu (klik — sortowanie).
+    pub left_header: Rect,
     pub right_list: Rect,
     pub fkeys: Rect,
 }
@@ -516,6 +518,20 @@ impl App {
             self.begin_find();
             return;
         }
+        // Sortowanie panelu plików (jak w MC): Ctrl+F3 nazwa, Ctrl+F5 data, Ctrl+F6 rozmiar;
+        // ponownie ten sam klawisz — odwrotna kolejność.
+        if k.modifiers.contains(KeyModifiers::CONTROL) {
+            let key = match k.code {
+                KeyCode::F(3) => Some(SortKey::Name),
+                KeyCode::F(5) => Some(SortKey::Mtime),
+                KeyCode::F(6) => Some(SortKey::Size),
+                _ => None,
+            };
+            if let Some(key) = key {
+                self.sort_by(key);
+                return;
+            }
+        }
         // Shift + strzałki/PgUp/PgDn/Home/End: zaznaczanie wielu plików (jak w MC).
         if k.modifiers.contains(KeyModifiers::SHIFT) {
             let page = self.page();
@@ -584,6 +600,15 @@ impl App {
             KeyCode::F(10) => self.request_quit(),
             _ => {}
         }
+    }
+
+    fn sort_by(&mut self, key: SortKey) {
+        self.browser.set_sort(key);
+        self.status_msg = format!(
+            "Sortowanie: {} {}",
+            self.browser.sort.label(),
+            if self.browser.sort_rev { "(malejąco)" } else { "(rosnąco)" }
+        );
     }
 
     /// Czy zaznaczona nazwa jest właśnie przewijana (ustawiane przy rysowaniu).
@@ -689,6 +714,24 @@ impl App {
                 let cell = (ui.fkeys.width / 10).max(1);
                 let n = ((m.column - ui.fkeys.x) / cell).min(9) as u8 + 1;
                 self.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+                return;
+            }
+        }
+        // Klik w nagłówek kolumny lewego panelu: sortowanie (drugi klik — odwrotnie), jak w MC.
+        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+            let h = ui.left_header;
+            if h.width > 0 && m.row == h.y && m.column >= h.x && m.column < h.x + h.width {
+                let x = (m.column - h.x) as usize;
+                let name_w = (h.width as usize).saturating_sub(20).max(4);
+                let key = if x < name_w {
+                    SortKey::Name
+                } else if x <= name_w + 7 {
+                    SortKey::Size
+                } else {
+                    SortKey::Mtime
+                };
+                self.focus = Focus::Left;
+                self.sort_by(key);
                 return;
             }
         }

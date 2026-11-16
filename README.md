@@ -100,6 +100,7 @@ po lewej pliki, po prawej kolejkę kodowania.
 | F4 | zmień nazwę pliku lub katalogu w lewym panelu (kursor stoi przed rozszerzeniem — wygodne dopisanie np. `_v2`); przy kilku zaznaczonych plikach albo po Tab — **zmiana nazw wielu plików** (niżej) |
 | F5 | dodaj zaznaczone do kolejki (katalog = wszystkie filmy w nim) |
 | Ctrl+F | **znajdź plik** po fragmencie nazwy (niżej) |
+| Ctrl+F3 / Ctrl+F5 / Ctrl+F6 | **sortowanie** panelu plików jak w MC: nazwa / data modyfikacji / rozmiar; ten sam klawisz drugi raz — odwrotna kolejność. Klik w nagłówek kolumny robi to samo. Katalogi zawsze przed plikami, strzałka w nagłówku pokazuje kolumnę i kierunek |
 | F6 | usuń zaznaczone (lub bieżący) pliki i katalogi z dysku w lewym panelu — po potwierdzeniu; przy katalogach okno ostrzega, ile plików i GB zniknie, potwierdzenie: Enter lub T, anulowanie: Esc lub N; gdy brakuje uprawnień, okno wyjaśnia, czego brakuje (właściciel, prawa zapisu) i podaje polecenie naprawy; katalogu głównego i domowego nie usuwa |
 | F7 | opcje |
 | F8 / Del | wyjmij z kolejki (plik zostaje na dysku) |
