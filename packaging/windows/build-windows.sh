@@ -131,7 +131,8 @@ cpu = 'x86_64'
 endian = 'little'
 EOF
 
-DEPSTAMP="dav1d=$DAV1D_REF libvpl=$LIBVPL_REF nvh=${NVCODEC_HEADERS_REF:-master} zimg=$ZIMG_REF opencl=$OPENCL_REF vkh=$VULKAN_HEADERS_REF glslang=$GLSLANG_REF placebo=$LIBPLACEBO_REF"
+# rev: zmiana wymusza przebudowanie zależności (2: OpenCL.a z ładowarki 2026.05).
+DEPSTAMP="rev=2 dav1d=$DAV1D_REF libvpl=$LIBVPL_REF nvh=${NVCODEC_HEADERS_REF:-master} zimg=$ZIMG_REF opencl=$OPENCL_REF vkh=$VULKAN_HEADERS_REF glslang=$GLSLANG_REF placebo=$LIBPLACEBO_REF"
 if [[ "$FORCE" = 1 || "$(cat "$DEPS/.stamp" 2>/dev/null)" != "$DEPSTAMP" ]]; then
     rm -rf "$DEPS" && mkdir -p "$DEPS"
 
@@ -194,6 +195,11 @@ if [[ "$FORCE" = 1 || "$(cat "$DEPS/.stamp" 2>/dev/null)" != "$DEPSTAMP" ]]; the
             -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF -DENABLE_OPENCL_LAYERINFO=OFF >/dev/null || return 1
         ninja -C "$WORK/OpenCL-ICD-Loader/build" install >/dev/null || return 1
+        # Od wydania 2026.05 ładowarka dla Windows instaluje się jako OpenCL.a (bez przedrostka lib) —
+        # -lOpenCL szuka libOpenCL.a.
+        if [[ ! -f "$DEPS/lib/libOpenCL.a" && -f "$DEPS/lib/OpenCL.a" ]]; then
+            mv -f "$DEPS/lib/OpenCL.a" "$DEPS/lib/libOpenCL.a"
+        fi
         [[ -f "$DEPS/lib/libOpenCL.a" ]] || return 1
         local pc="$DEPS/lib/pkgconfig/OpenCL.pc"
         mkdir -p "$DEPS/lib/pkgconfig"
