@@ -259,32 +259,63 @@ unsafe fn build_graph(
     let mut sink: *mut ff::AVFilterContext = null_mut();
     let f = ff::avfilter_get_by_name(cs(sink_name).as_ptr());
     chk(ff::avfilter_graph_create_filter(&mut sink, f, cs("out").as_ptr(), null(), null_mut(), graph), "odbiornik grafu filtrów")?;
-    let mut inputs = ff::avfilter_inout_alloc();
-    (*inputs).name = ff::av_strdup(cs("out").as_ptr());
-    (*inputs).filter_ctx = sink;
-    (*inputs).pad_idx = 0;
-    (*inputs).next = null_mut();
-    let mut outputs: *mut ff::AVFilterInOut = null_mut();
-    if !src.is_null() {
-        outputs = ff::avfilter_inout_alloc();
-        (*outputs).name = ff::av_strdup(cs("in").as_ptr());
-        (*outputs).filter_ctx = src;
-        (*outputs).pad_idx = 0;
-        (*outputs).next = null_mut();
-    }
-    let r = ff::avfilter_graph_parse_ptr(graph, cs(desc).as_ptr(), &mut inputs, &mut outputs, null_mut());
-    ff::avfilter_inout_free(&mut inputs);
-    ff::avfilter_inout_free(&mut outputs);
-    chk(r, &format!("filtry „{desc}”"))?;
-    if let Some(dev) = device {
-        for i in 0..(*graph).nb_filters as usize {
-            let fc = *(*graph).filters.add(i);
-            // AVFILTER_FLAG_HWDEVICE
-            if (*(*fc).filter).flags & (1 << 4) != 0 && (*fc).hw_device_ctx.is_null() {
-                (*fc).hw_device_ctx = ff::av_buffer_ref(dev);
+    // Jak w ffmpeg: parsowanie segmentu → utworzenie filtrów → urządzenie sprzętowe → opcje i init → łączenie.
+    // Urządzenie musi być przed init: w FFmpeg 9 hwupload (i inne filtry sprzętowe) sprawdza je już wtedy.
+    let mut seg: *mut ff::AVFilterGraphSegment = null_mut();
+    chk(ff::avfilter_graph_segment_parse(graph, cs(desc).as_ptr(), 0, &mut seg), &format!("filtry „{desc}”"))?;
+    let r = (|| -> Result<()> {
+        chk(ff::avfilter_graph_segment_create_filters(seg, 0), &format!("filtry „{desc}”"))?;
+        if let Some(dev) = device {
+            for i in 0..(*graph).nb_filters as usize {
+                let fc = *(*graph).filters.add(i);
+                // AVFILTER_FLAG_HWDEVICE
+                if (*(*fc).filter).flags & (1 << 4) != 0 && (*fc).hw_device_ctx.is_null() {
+                    (*fc).hw_device_ctx = ff::av_buffer_ref(dev);
+                }
             }
         }
-    }
+        chk(ff::avfilter_graph_segment_apply_opts(seg, 0), &format!("opcje filtrów „{desc}”"))?;
+        chk(ff::avfilter_graph_segment_init(seg, 0), &format!("filtry „{desc}”"))?;
+        let mut ins: *mut ff::AVFilterInOut = null_mut();
+        let mut outs: *mut ff::AVFilterInOut = null_mut();
+        let r = ff::avfilter_graph_segment_link(seg, 0, &mut ins, &mut outs);
+        let linked = (|| -> Result<()> {
+            chk(r, &format!("łączenie filtrów „{desc}”"))?;
+            // Wolne wejście łańcucha ← źródło, wolne wyjście → odbiornik.
+            let mut cur = ins;
+            let mut n_in = 0;
+            while !cur.is_null() {
+                if src.is_null() || n_in > 0 {
+                    bail!("filtry „{desc}”: nieobsługiwane dodatkowe wejście");
+                }
+                chk(ff::avfilter_link(src, 0, (*cur).filter_ctx, (*cur).pad_idx as u32), "łączenie źródła z filtrami")?;
+                n_in += 1;
+                cur = (*cur).next;
+            }
+            if n_in == 0 && !src.is_null() {
+                bail!("filtry „{desc}”: łańcuch bez wejścia");
+            }
+            let mut cur = outs;
+            let mut n_out = 0;
+            while !cur.is_null() {
+                if n_out > 0 {
+                    bail!("filtry „{desc}”: nieobsługiwane dodatkowe wyjście");
+                }
+                chk(ff::avfilter_link((*cur).filter_ctx, (*cur).pad_idx as u32, sink, 0), "łączenie filtrów z odbiornikiem")?;
+                n_out += 1;
+                cur = (*cur).next;
+            }
+            if n_out == 0 {
+                bail!("filtry „{desc}”: łańcuch bez wyjścia");
+            }
+            Ok(())
+        })();
+        ff::avfilter_inout_free(&mut ins);
+        ff::avfilter_inout_free(&mut outs);
+        linked
+    })();
+    ff::avfilter_graph_segment_free(&mut seg);
+    r?;
     chk(ff::avfilter_graph_config(graph, null_mut()), &format!("konfiguracja filtrów „{desc}”"))?;
     Ok(sink)
 }
